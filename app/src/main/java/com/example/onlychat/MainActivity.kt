@@ -374,7 +374,7 @@ fun MainScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(20.dp)
+            .padding(16.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -409,9 +409,9 @@ fun MainScreen(
             Text("🟢 Auto-Refreshing active", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         Divider()
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         if (peers.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -433,6 +433,10 @@ fun DeviceCard(
     peer: PeerDevice,
     onDoubleClick: () -> Unit
 ) {
+    val nameParts = remember(peer.name) { peer.name.split("|") }
+    val mainName = nameParts.firstOrNull() ?: peer.name
+    val deviceInfo = nameParts.getOrNull(1) ?: ""
+
     Card(
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
@@ -442,18 +446,29 @@ fun DeviceCard(
     ) {
         Row(
             modifier = Modifier
-                .padding(16.dp)
+                .padding(14.dp)
                 .fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = peer.name,
+                    text = mainName,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                if (deviceInfo.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(1.dp))
+                    Text(
+                        text = deviceInfo,
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Surface(
@@ -503,6 +518,8 @@ fun ChatFullScreenWindow(
     var fullScreenImageBase64 by remember { mutableStateOf<String?>(null) }
     var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
 
+    val cleanPeerName = remember(peer.name) { peer.name.split("|").firstOrNull() ?: peer.name }
+
     val photoGalleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -533,9 +550,10 @@ fun ChatFullScreenWindow(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .imePadding()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .imePadding() // 🌟 Ensures entire lower control section stays pinned directly above the keyboard
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
+                // Header Bar
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -543,19 +561,20 @@ fun ChatFullScreenWindow(
                     IconButton(onClick = onDismiss) {
                         Text("←", fontSize = 22.sp, fontWeight = FontWeight.Bold)
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Chat: ${peer.name}", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Chat: $cleanPeerName", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
 
-                Divider(modifier = Modifier.padding(vertical = 6.dp))
+                Divider(modifier = Modifier.padding(vertical = 4.dp))
 
+                // 🌟 EXPANDED CHAT HISTORY AREA (Takes up all available vertical space)
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                         .scrollbar(listState, width = 4.dp, color = MaterialTheme.colorScheme.primary),
-                    contentPadding = PaddingValues(vertical = 4.dp, horizontal = 4.dp),
+                    contentPadding = PaddingValues(vertical = 4.dp, horizontal = 2.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(messages) { msg ->
@@ -594,7 +613,6 @@ fun ChatFullScreenWindow(
                                                 )
                                             }
 
-                                            // 🌟 FOREGROUND OVERLAY FOR PHOTO TRANSFER
                                             if (msg.progress != null && msg.progress < 1f) {
                                                 Box(
                                                     modifier = Modifier
@@ -636,7 +654,6 @@ fun ChatFullScreenWindow(
                                         )
                                     }
 
-                                    // Fallback progress bar for non-photo messages
                                     if (msg.base64Image == null && msg.progress != null && msg.progress < 1f) {
                                         Spacer(modifier = Modifier.height(6.dp))
                                         Column {
@@ -690,17 +707,18 @@ fun ChatFullScreenWindow(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
 
+                // Compact Secondary Action Buttons Row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     OutlinedButton(
                         onClick = { photoGalleryLauncher.launch("image/*") },
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
                     ) {
                         Text("📷 Gallery", fontSize = 11.sp)
                     }
@@ -722,7 +740,7 @@ fun ChatFullScreenWindow(
                         },
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
                     ) {
                         Text("🤳 Selfie", fontSize = 11.sp)
                     }
@@ -731,54 +749,50 @@ fun ChatFullScreenWindow(
                         onClick = onSendWhoAmI,
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
                     ) {
                         Text("👤 WhoAmI", fontSize = 11.sp)
                     }
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
 
+                // 🌟 BOTTOM INPUT BAR (TEXT FIELD + SEND + CLOSE DIRECTLY AT THE BOTTOM ABOVE KEYBOARD)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     OutlinedTextField(
                         value = textInput,
                         onValueChange = { textInput = it },
-                        placeholder = { Text("Type message...") },
+                        placeholder = { Text("Type message...", fontSize = 13.sp) },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(16.dp),
-                        minLines = 2,
+                        minLines = 1,
                         maxLines = 3
                     )
 
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                    Button(
+                        onClick = {
+                            if (textInput.isNotBlank()) {
+                                onSendMessage(textInput)
+                                textInput = ""
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
                     ) {
-                        Button(
-                            onClick = {
-                                if (textInput.isNotBlank()) {
-                                    onSendMessage(textInput)
-                                    textInput = ""
-                                }
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-                        ) {
-                            Text("Send", fontSize = 12.sp)
-                        }
+                        Text("Send", fontSize = 12.sp)
+                    }
 
-                        Button(
-                            onClick = onDismiss,
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                        ) {
-                            Text("Close", fontSize = 12.sp)
-                        }
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp)
+                    ) {
+                        Text("Close", fontSize = 12.sp)
                     }
                 }
             }
@@ -977,7 +991,6 @@ class ChatService : Service() {
 
     private val connectingOrConnected = mutableSetOf<String>()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private val uniqueSessionSuffix = UUID.randomUUID().toString().take(4)
 
     override fun onCreate() {
         super.onCreate()
@@ -1011,9 +1024,11 @@ class ChatService : Service() {
     }
 
     fun getDetailedDeviceName(): String {
+        val manufacturer = Build.MANUFACTURER.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
         val model = Build.MODEL
-        val baseName = if (model.length > 15) model.substring(0, 15) else model
-        return "$baseName ($uniqueSessionSuffix)"
+        val hardware = Build.HARDWARE
+        val board = Build.BOARD
+        return "$manufacturer $model|$hardware • $board"
     }
 
     private fun createNotificationChannels() {
@@ -1078,10 +1093,12 @@ class ChatService : Service() {
             this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val cleanName = deviceName.split("|").firstOrNull() ?: deviceName
+
         val notification = NotificationCompat.Builder(this, "incoming_messages_channel")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setContentTitle("New Device Discovered!")
-            .setContentText("Found nearby device: $deviceName")
+            .setContentText("Found nearby device: $cleanName")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setSound(soundUri)
@@ -1117,9 +1134,11 @@ class ChatService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val cleanSenderName = senderName.split("|").firstOrNull() ?: senderName
+
         val notification = NotificationCompat.Builder(this, "incoming_messages_channel")
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle("New Message from $senderName")
+            .setContentTitle("New Message from $cleanSenderName")
             .setContentText(messagePreview)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
@@ -1180,7 +1199,6 @@ class ChatService : Service() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val myName = getDetailedDeviceName()
 
-            // 🛑 Self-Discovery Loopback Guard: Ignore local echoes
             if (info.endpointName == myName) return
 
             val isOnlyChat = info.serviceId == SERVICE_ID
@@ -1205,7 +1223,6 @@ class ChatService : Service() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             val myName = getDetailedDeviceName()
 
-            // 🛑 Self-Discovery Loopback Guard: Prevent connection to self
             if (info.endpointName == myName) return
 
             connectingOrConnected.add(endpointId)
