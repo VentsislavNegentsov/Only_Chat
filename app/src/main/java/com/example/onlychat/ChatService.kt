@@ -11,7 +11,6 @@ import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
-import android.provider.Settings
 import android.util.Base64
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.nearby.Nearby
@@ -183,7 +182,7 @@ class ChatService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        createMessageNotificationChannel()
+        createNotificationChannels()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -202,13 +201,12 @@ class ChatService : Service() {
         return START_STICKY
     }
 
-    // Short device name is REQUIRED to avoid Nearby Connections endpoint name byte limit
     fun getDetailedDeviceName(): String {
         val model = Build.MODEL
         return if (model.length > 20) model.substring(0, 20) else model
     }
 
-    private fun createMessageNotificationChannel() {
+    private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
             val audioAttributes = AudioAttributes.Builder()
@@ -216,7 +214,10 @@ class ChatService : Service() {
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build()
 
-            val channel = NotificationChannel(
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            // Incoming Messages Channel
+            val msgChannel = NotificationChannel(
                 "incoming_messages_channel",
                 "Incoming Chat Messages",
                 NotificationManager.IMPORTANCE_HIGH
@@ -226,8 +227,19 @@ class ChatService : Service() {
                 setSound(soundUri, audioAttributes)
             }
 
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
+            // Device Discovered Alerts Channel
+            val deviceChannel = NotificationChannel(
+                "device_found_channel",
+                "Device Discovered Alerts",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alerts and pops up when a new nearby device is found"
+                enableVibration(true)
+                setSound(soundUri, audioAttributes)
+            }
+
+            manager.createNotificationChannel(msgChannel)
+            manager.createNotificationChannel(deviceChannel)
         }
     }
 
@@ -251,6 +263,53 @@ class ChatService : Service() {
             startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else {
             startForeground(1, notification)
+        }
+    }
+
+    private fun notifyDeviceFoundAndBringToFront(deviceName: String) {
+        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+
+        try {
+            val ringtone = RingtoneManager.getRingtone(applicationContext, soundUri)
+            ringtone?.play()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            1001,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, "device_found_channel")
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentTitle("⚡ Device Found!")
+            .setContentText("Discovered nearby device: $deviceName")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
+            .setAutoCancel(true)
+            .setSound(soundUri)
+            .setVibrate(longArrayOf(0, 300, 100, 300))
+            .setContentIntent(pendingIntent)
+            .setFullScreenIntent(pendingIntent, true)
+            .build()
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(2001, notification)
+
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -320,6 +379,9 @@ class ChatService : Service() {
     }
 
     private fun addOrUpdatePeer(endpointId: String, name: String) {
+        // Strict Filter: Never add own device
+        if (name.equals(getDetailedDeviceName(), ignoreCase = true)) return
+
         val currentList = _discoveredPeers.value.toMutableList()
         val existingIndex = currentList.indexOfFirst { it.endpointId == endpointId }
         if (existingIndex != -1) {
@@ -332,7 +394,20 @@ class ChatService : Service() {
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
+            // Ignore if discovered endpoint is own device
+            if (info.endpointName.equals(getDetailedDeviceName(), ignoreCase = true)) {
+                return
+            }
+
+            val isNewDevice = _discoveredPeers.value.none { it.endpointId == endpointId }
+
             addOrUpdatePeer(endpointId, info.endpointName)
+
+            // Trigger sound, notification, and full-screen popup on device discovery
+            if (isNewDevice) {
+                notifyDeviceFoundAndBringToFront(info.endpointName)
+            }
+
             if (!connectingOrConnected.contains(endpointId)) {
                 connectingOrConnected.add(endpointId)
                 Nearby.getConnectionsClient(this@ChatService)
@@ -350,6 +425,8 @@ class ChatService : Service() {
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
+            if (info.endpointName.equals(getDetailedDeviceName(), ignoreCase = true)) return
+
             connectingOrConnected.add(endpointId)
             addOrUpdatePeer(endpointId, info.endpointName)
             Nearby.getConnectionsClient(this@ChatService)

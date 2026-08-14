@@ -1,273 +1,300 @@
 package com.example.onlychat
 
 import android.Manifest
-import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
-import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.activity.result.launch
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SentimentSatisfied
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
-
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (permissions.values.all { it }) {
-            startChatService()
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Turn screen on and unlock if device receives incoming chat while locked
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                        WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
-            )
-        }
-
-        checkAndRequestPermissions()
-
         setContent {
             MaterialTheme {
-                val peers by ChatService.discoveredPeers.collectAsState()
-                val chatHistoryMap by ChatService.chatHistoryMap.collectAsState()
-                val activeChatPeer by ChatService.activeChatPeer.collectAsState()
-                val context = LocalContext.current
-
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        MainScreen(
-                            peers = peers,
-                            onDeviceDoubleClick = { peer -> ChatService.setActiveChatPeer(peer) },
-                            onManualRefreshClick = { refreshChatService() },
-                            onExitClick = {
-                                stopChatService()
-                                finish()
-                            }
-                        )
-
-                        activeChatPeer?.let { peer ->
-                            val peerMessages = chatHistoryMap[peer.endpointId] ?: emptyList()
-
-                            ChatPopupDialog(
-                                peer = peer,
-                                messages = peerMessages,
-                                onDismiss = { ChatService.setActiveChatPeer(null) },
-                                onSendMessage = { text -> ChatService.sendMessage(peer.endpointId, text) },
-                                onSendWhoAmI = { ChatService.sendWhoAmI(peer.endpointId) },
-                                onSendPhotoUri = { uri -> ChatService.sendPhotoUri(context, peer.endpointId, uri) },
-                                onSendPhotoBitmap = { bitmap -> ChatService.sendPhotoBitmap(peer.endpointId, bitmap) }
-                            )
-                        }
-                    }
+                    OnlyChatApp()
                 }
             }
         }
     }
+}
 
-    override fun onNewIntent(intent: Intent?) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-    }
+@Composable
+fun OnlyChatApp() {
+    val context = LocalContext.current
+    var hasPermissions by remember { mutableStateOf(checkAllPermissions(context)) }
 
-    private fun checkAndRequestPermissions() {
-        val permissions = mutableListOf(
+    val permissionsToRequest = remember {
+        val list = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.CAMERA
         )
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
-            permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
-            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+            list.add(Manifest.permission.BLUETOOTH_SCAN)
+            list.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            list.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            list.add(Manifest.permission.BLUETOOTH)
+            list.add(Manifest.permission.BLUETOOTH_ADMIN)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+            list.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            list.add(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        permissionLauncher.launch(permissions.toTypedArray())
+        list.toTypedArray()
     }
 
-    private fun startChatService() {
-        val intent = Intent(this, ChatService::class.java).apply { action = ChatService.ACTION_START }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        hasPermissions = results.values.all { it }
+        if (hasPermissions) {
+            startChatService(context)
         } else {
-            startService(intent)
+            Toast.makeText(context, "Permissions are required for P2P Chat", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun refreshChatService() {
-        val intent = Intent(this, ChatService::class.java).apply { action = ChatService.ACTION_REFRESH }
-        startService(intent)
+    LaunchedEffect(Unit) {
+        if (!hasPermissions) {
+            launcher.launch(permissionsToRequest)
+        } else {
+            startChatService(context)
+        }
     }
 
-    private fun stopChatService() {
-        val intent = Intent(this, ChatService::class.java).apply { action = ChatService.ACTION_STOP }
-        startService(intent)
-    }
-}
-
-@Composable
-fun MainScreen(
-    peers: List<PeerDevice>,
-    onDeviceDoubleClick: (PeerDevice) -> Unit,
-    onManualRefreshClick: () -> Unit,
-    onExitClick: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(20.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+    if (hasPermissions) {
+        MainContent()
+    } else {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
         ) {
-            Text("OnlyChat", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = onManualRefreshClick,
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text("🔄 Refresh", fontSize = 13.sp)
-                }
-
-                Button(
-                    onClick = onExitClick,
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text("❌ Exit", fontSize = 13.sp, color = Color.White)
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🟢 Auto-Refreshing every 5s", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-        Divider()
-        Spacer(modifier = Modifier.height(12.dp))
-
-        if (peers.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Scanning for nearby devices...\nAuto-refresh is active.", color = Color.Gray)
-            }
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(peers) { peer ->
-                    DeviceCard(peer = peer, onDoubleClick = { onDeviceDoubleClick(peer) })
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(text = "Permissions Required", style = MaterialTheme.typography.titleLarge)
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(onClick = { launcher.launch(permissionsToRequest) }) {
+                    Text("Grant Permissions")
                 }
             }
         }
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+private fun checkAllPermissions(context: Context): Boolean {
+    val list = mutableListOf(
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.CAMERA
+    )
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        list.add(Manifest.permission.BLUETOOTH_SCAN)
+        list.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+        list.add(Manifest.permission.BLUETOOTH_CONNECT)
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        list.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        list.add(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    return list.all {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
+}
+
+private fun startChatService(context: Context) {
+    val intent = Intent(context, ChatService::class.java).apply {
+        action = ChatService.ACTION_START
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        context.startForegroundService(intent)
+    } else {
+        context.startService(intent)
+    }
+}
+
 @Composable
-fun DeviceCard(
-    peer: PeerDevice,
-    onDoubleClick: () -> Unit
-) {
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = {}, onDoubleClick = onDoubleClick)
-    ) {
-        Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
-            Text(
-                text = peer.name,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+fun MainContent() {
+    val context = LocalContext.current
+    val activePeer by ChatService.activeChatPeer.collectAsState()
+
+    if (activePeer == null) {
+        PeerListScreen(
+            onSelectPeer = { peer ->
+                ChatService.setActiveChatPeer(peer)
+            },
+            onRefresh = {
+                val intent = Intent(context, ChatService::class.java).apply {
+                    action = ChatService.ACTION_REFRESH
+                }
+                context.startService(intent)
+            }
+        )
+    } else {
+        ChatScreen(
+            peer = activePeer!!,
+            onBack = {
+                ChatService.setActiveChatPeer(null)
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PeerListScreen(onSelectPeer: (PeerDevice) -> Unit, onRefresh: () -> Unit) {
+    val peers by ChatService.discoveredPeers.collectAsState()
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("OnlyChat - Nearby Devices") },
+                actions = {
+                    IconButton(onClick = onRefresh) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                }
             )
         }
+    ) { innerPadding ->
+        if (peers.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(text = "Searching for nearby devices...", color = Color.Gray)
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                items(peers) { peer ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .clickable { onSelectPeer(peer) },
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(MaterialTheme.colorScheme.primary, shape = CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = peer.name.take(1).uppercase(),
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column {
+                                Text(text = peer.name, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                                Text(text = "Tap to open chat", fontSize = 12.sp, color = Color.Gray)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatPopupDialog(
-    peer: PeerDevice,
-    messages: List<ChatMessage>,
-    onDismiss: () -> Unit,
-    onSendMessage: (String) -> Unit,
-    onSendWhoAmI: () -> Unit,
-    onSendPhotoUri: (Uri) -> Unit,
-    onSendPhotoBitmap: (Bitmap) -> Unit
-) {
-    var textInput by remember { mutableStateOf("") }
+fun ChatScreen(peer: PeerDevice, onBack: () -> Unit) {
+    val context = LocalContext.current
+    val historyMap by ChatService.chatHistoryMap.collectAsState()
+    val messages = historyMap[peer.endpointId] ?: emptyList()
+
+    var inputText by remember { mutableStateOf("") }
+    var showEmojiPicker by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
-    val photoGalleryLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let { onSendPhotoUri(it) }
+    var fullscreenImageBase64 by remember { mutableStateOf<String?>(null) }
+
+    val popularEmojis = remember {
+        listOf("😀", "😂", "😍", "👍", "❤️", "🔥", "🎉", "😮", "😢", "🙏", "🚀", "👋", "😎", "💩", "💯", "🤝", "🥳", "✨")
     }
 
-    val frontCameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val bitmap = result.data?.extras?.get("data") as? Bitmap
-            bitmap?.let { b -> onSendPhotoBitmap(b) }
-        }
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let { ChatService.sendPhotoUri(context, peer.endpointId, it) }
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: Bitmap? ->
+        bitmap?.let { ChatService.sendPhotoBitmap(peer.endpointId, it) }
     }
 
     LaunchedEffect(messages.size) {
@@ -276,173 +303,234 @@ fun ChatPopupDialog(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Chat: ${peer.name}", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth().height(360.dp)) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text(peer.name) },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { ChatService.sendWhoAmI(peer.endpointId) }) {
+                            Icon(Icons.Default.Info, contentDescription = "Who Am I")
+                        }
+                    }
+                )
+            }
+        ) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                // Messages List
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
                         .weight(1f)
-                        .scrollbar(listState, width = 4.dp, color = MaterialTheme.colorScheme.primary),
-                    contentPadding = PaddingValues(end = 8.dp)
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
                 ) {
                     items(messages) { msg ->
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            contentAlignment = if (msg.isFromMe) Alignment.CenterEnd else Alignment.CenterStart
-                        ) {
-                            Surface(
-                                color = if (msg.isFromMe) MaterialTheme.colorScheme.primary else Color(0xFFE0E0E0),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(8.dp)) {
-                                    if (msg.base64Image != null) {
-                                        val bitmap = remember(msg.base64Image) {
-                                            ImageUtils.decodeBase64ToBitmap(msg.base64Image)
-                                        }
-                                        bitmap?.let { b ->
-                                            Image(
-                                                bitmap = b.asImageBitmap(),
-                                                contentDescription = "Shared photo",
-                                                modifier = Modifier
-                                                    .widthIn(max = 200.dp)
-                                                    .heightIn(max = 200.dp)
-                                                    .clip(RoundedCornerShape(8.dp)),
-                                                contentScale = ContentScale.Crop
-                                            )
-                                        }
-                                    }
-                                    if (msg.text.isNotBlank() && msg.base64Image == null) {
-                                        Text(
-                                            text = msg.text,
-                                            color = if (msg.isFromMe) Color.White else Color.Black,
-                                            fontSize = 14.sp
-                                        )
-                                    }
-                                    if (msg.isFromMe) {
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                        StatusSymbolIndicator(msg.status)
-                                    }
-                                }
+                        ChatMessageItem(
+                            message = msg,
+                            onPhotoClick = { base64 ->
+                                fullscreenImageBase64 = base64
                             }
+                        )
+                    }
+                }
+
+                // Quick Emoticons Bar (Toggleable)
+                if (showEmojiPicker) {
+                    LazyRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(popularEmojis) { emoji ->
+                            Text(
+                                text = emoji,
+                                fontSize = 24.sp,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        inputText += emoji
+                                    }
+                                    .padding(4.dp)
+                            )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
-
+                // Input Controls
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    OutlinedButton(
-                        onClick = { photoGalleryLauncher.launch("image/*") },
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
-                    ) {
-                        Text("📷 Gallery", fontSize = 11.sp)
+                    IconButton(onClick = { showEmojiPicker = !showEmojiPicker }) {
+                        Icon(
+                            Icons.Default.SentimentSatisfied,
+                            contentDescription = "Emoticons",
+                            tint = if (showEmojiPicker) MaterialTheme.colorScheme.primary else Color.Gray
+                        )
                     }
-
-                    OutlinedButton(
+                    IconButton(onClick = { galleryLauncher.launch("image/*") }) {
+                        Icon(Icons.Default.Photo, contentDescription = "Gallery")
+                    }
+                    IconButton(onClick = { cameraLauncher.launch() }) {
+                        Icon(Icons.Default.CameraAlt, contentDescription = "Camera")
+                    }
+                    TextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        placeholder = { Text("Type a message...") },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 3,
+                        shape = RoundedCornerShape(24.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    FloatingActionButton(
                         onClick = {
-                            val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                                putExtra("android.intent.extras.CAMERA_FACING", 1)
-                                putExtra("android.intent.extras.LENS_FACING_FRONT", 1)
-                                putExtra("usefrontcamera", true)
+                            if (inputText.isNotBlank()) {
+                                ChatService.sendMessage(peer.endpointId, inputText.trim())
+                                inputText = ""
                             }
-                            frontCameraLauncher.launch(intent)
                         },
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(48.dp)
                     ) {
-                        Text("🤳 Selfie", fontSize = 11.sp)
-                    }
-
-                    OutlinedButton(
-                        onClick = onSendWhoAmI,
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
-                    ) {
-                        Text("👤 Who Am I", fontSize = 11.sp)
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = Color.White
+                        )
                     }
                 }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                OutlinedTextField(
-                    value = textInput,
-                    onValueChange = { textInput = it },
-                    placeholder = { Text("Type message...") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                if (textInput.isNotBlank()) {
-                    onSendMessage(textInput)
-                    textInput = ""
-                }
-            }) {
-                Text("Send")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close")
             }
         }
-    )
+
+        // Full-Screen Image Viewer Overlay
+        fullscreenImageBase64?.let { base64Str ->
+            val fullBitmap = remember(base64Str) {
+                ImageUtils.decodeBase64ToBitmap(base64Str)
+            }
+
+            fullBitmap?.let { bitmap ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                        .clickable {
+                            fullscreenImageBase64 = null
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "Full Screen Photo Preview",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
-fun StatusSymbolIndicator(status: MessageStatus) {
-    val (symbol, color) = when (status) {
-        MessageStatus.SENT -> Pair("✓ Sent", Color.White.copy(alpha = 0.6f))
-        MessageStatus.DELIVERED -> Pair("✓✓ Received", Color.White.copy(alpha = 0.85f))
-        MessageStatus.READ -> Pair("☑ Read", Color(0xFF80D8FF))
+fun ChatMessageItem(message: ChatMessage, onPhotoClick: (String) -> Unit) {
+    val alignment = if (message.isFromMe) Alignment.End else Alignment.Start
+    val bgColor = if (message.isFromMe) MaterialTheme.colorScheme.primaryContainer else Color(0xFFE9ECEF)
+    val textColor = if (message.isFromMe) MaterialTheme.colorScheme.onPrimaryContainer else Color.Black
+
+    val timeFormatted = remember(message.timestamp) {
+        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.timestamp))
     }
 
-    Text(
-        text = symbol,
-        fontSize = 10.sp,
-        fontWeight = FontWeight.Bold,
-        color = color,
-        modifier = Modifier.padding(top = 2.dp)
-    )
-}
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalAlignment = alignment
+    ) {
+        Surface(
+            color = bgColor,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.widthIn(max = 280.dp)
+        ) {
+            Column(modifier = Modifier.padding(8.dp)) {
 
-fun Modifier.scrollbar(
-    state: LazyListState,
-    width: Dp = 4.dp,
-    color: Color = Color.Gray
-): Modifier = this.drawWithContent {
-    drawContent()
+                // Photo Payload
+                if (message.base64Image != null) {
+                    val bitmap = remember(message.base64Image) {
+                        ImageUtils.decodeBase64ToBitmap(message.base64Image!!)
+                    }
+                    bitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "Photo Message",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    onPhotoClick(message.base64Image!!)
+                                },
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                }
 
-    val firstVisibleElementIndex = state.layoutInfo.visibleItemsInfo.firstOrNull()?.index
-    val totalItems = state.layoutInfo.totalItemsCount
+                // Text Payload
+                if (message.text.isNotEmpty() && message.text != "[Photo]") {
+                    if (message.base64Image != null) Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = message.text,
+                        color = textColor,
+                        fontSize = 15.sp
+                    )
+                }
 
-    if (firstVisibleElementIndex != null && totalItems > 0) {
-        val visibleItemsCount = state.layoutInfo.visibleItemsInfo.size
-        val totalHeight = size.height
-
-        val scrollbarHeight = (visibleItemsCount.toFloat() / totalItems.toFloat() * totalHeight)
-            .coerceAtLeast(24.dp.toPx())
-        val scrollbarTop = (firstVisibleElementIndex.toFloat() / totalItems.toFloat()) * totalHeight
-
-        val scrollbarWidthPx = width.toPx()
-
-        drawRoundRect(
-            color = color,
-            topLeft = Offset(size.width - scrollbarWidthPx, scrollbarTop),
-            size = Size(scrollbarWidthPx, scrollbarHeight),
-            cornerRadius = CornerRadius(scrollbarWidthPx / 2, scrollbarWidthPx / 2),
-            alpha = 0.6f
-        )
+                // Status & Timestamp
+                Spacer(modifier = Modifier.height(2.dp))
+                Row(
+                    modifier = Modifier.align(Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = timeFormatted,
+                        fontSize = 10.sp,
+                        color = Color.Gray
+                    )
+                    if (message.isFromMe) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        val statusText = when (message.status) {
+                            MessageStatus.SENT -> "✓"
+                            MessageStatus.DELIVERED -> "✓✓"
+                            MessageStatus.READ -> "✓✓ (Read)"
+                        }
+                        val statusColor = if (message.status == MessageStatus.READ) Color(0xFF007AFF) else Color.Gray
+                        Text(
+                            text = statusText,
+                            fontSize = 10.sp,
+                            color = statusColor,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
     }
 }
