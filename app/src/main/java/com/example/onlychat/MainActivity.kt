@@ -40,55 +40,42 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val peers by ChatService.discoveredPeers.collectAsState()
-                val messages by ChatService.chatMessages.collectAsState()
-                val incomingPopup by ChatService.incomingPopup.collectAsState()
-
-                var selectedPeer by remember { mutableStateOf<PeerDevice?>(null) }
+                val chatHistoryMap by ChatService.chatHistoryMap.collectAsState()
+                val activeChatPeer by ChatService.activeChatPeer.collectAsState()
 
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // Main Device List View
-                        DeviceListScreen(
+                        // Main Screen UI
+                        MainScreen(
                             peers = peers,
                             onDeviceDoubleClick = { peer ->
-                                selectedPeer = peer
+                                ChatService.setActiveChatPeer(peer)
+                            },
+                            onRefreshClick = {
+                                refreshChatService()
+                            },
+                            onExitClick = {
+                                stopChatService()
+                                finish() // Close App
                             }
                         )
 
-                        // Active Chat Screen / Sheet
-                        selectedPeer?.let { peer ->
-                            ChatDialog(
-                                peer = peer,
-                                messages = messages.filter { it.senderId == peer.endpointId },
-                                onDismiss = { selectedPeer = null },
-                                onSendMessage = { text ->
-                                    ChatService.sendMessage(peer.endpointId, text, peer.name)
-                                }
-                            )
-                        }
+                        // Single Active Chat Pop-Up Dialog per Client
+                        activeChatPeer?.let { peer ->
+                            val peerMessages = chatHistoryMap[peer.endpointId] ?: emptyList()
 
-                        // Instant Pop-up Dialog when receiving a message
-                        incomingPopup?.let { msg ->
-                            AlertDialog(
-                                onDismissRequest = { ChatService.clearPopup() },
-                                title = { Text("📬 Message from ${msg.senderName}") },
-                                text = { Text(msg.text, fontSize = 16.sp) },
-                                confirmButton = {
-                                    Button(onClick = {
-                                        // Open chat window directly with sender
-                                        selectedPeer = PeerDevice(msg.senderId, msg.senderName)
-                                        ChatService.clearPopup()
-                                    }) {
-                                        Text("Open Chat")
-                                    }
+                            ChatPopupDialog(
+                                peer = peer,
+                                messages = peerMessages,
+                                onDismiss = {
+                                    // Closes popup, but history remains stored in chatHistoryMap!
+                                    ChatService.setActiveChatPeer(null)
                                 },
-                                dismissButton = {
-                                    TextButton(onClick = { ChatService.clearPopup() }) {
-                                        Text("Dismiss")
-                                    }
+                                onSendMessage = { text ->
+                                    ChatService.sendMessage(peer.endpointId, text)
                                 }
                             )
                         }
@@ -128,26 +115,67 @@ class MainActivity : ComponentActivity() {
             startService(intent)
         }
     }
+
+    private fun refreshChatService() {
+        val intent = Intent(this, ChatService::class.java).apply {
+            action = ChatService.ACTION_REFRESH
+        }
+        startService(intent)
+    }
+
+    private fun stopChatService() {
+        val intent = Intent(this, ChatService::class.java).apply {
+            action = ChatService.ACTION_STOP
+        }
+        startService(intent)
+    }
 }
 
 @Composable
-fun DeviceListScreen(
+fun MainScreen(
     peers: List<PeerDevice>,
-    onDeviceDoubleClick: (PeerDevice) -> Unit
+    onDeviceDoubleClick: (PeerDevice) -> Unit,
+    onRefreshClick: () -> Unit,
+    onExitClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(20.dp)
     ) {
-        Text("OnlyChat Nearby", fontSize = 26.sp, fontWeight = FontWeight.Bold)
-        Text(
-            "Double-click a device to send a message",
-            fontSize = 14.sp,
-            color = Color.Gray,
-            modifier = Modifier.padding(bottom = 16.dp)
-        )
+        // Top Bar Controls: Refresh & Exit Buttons
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("OnlyChat", fontSize = 24.sp, fontWeight = FontWeight.Bold)
 
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Refresh Button
+                OutlinedButton(
+                    onClick = onRefreshClick,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text("🔄 Refresh", fontSize = 13.sp)
+                }
+
+                // Exit Button
+                Button(
+                    onClick = onExitClick,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text("❌ Exit", fontSize = 13.sp, color = Color.White)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("Double-click a device to open chat", fontSize = 13.sp, color = Color.Gray)
+        Spacer(modifier = Modifier.height(12.dp))
         Divider()
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -156,7 +184,7 @@ fun DeviceListScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                Text("Scanning for nearby devices in range...", color = Color.Gray)
+                Text("Scanning for nearby devices...\nTap Refresh if none appear.", color = Color.Gray)
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -180,8 +208,8 @@ fun DeviceCard(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
-                onClick = {}, // Normal single click does nothing
-                onDoubleClick = onDoubleClick // DOUBLE CLICK triggers chat!
+                onClick = {},
+                onDoubleClick = onDoubleClick // Double click triggers chat!
             )
     ) {
         Row(
@@ -206,7 +234,7 @@ fun DeviceCard(
 }
 
 @Composable
-fun ChatDialog(
+fun ChatPopupDialog(
     peer: PeerDevice,
     messages: List<ChatMessage>,
     onDismiss: () -> Unit,
@@ -216,12 +244,12 @@ fun ChatDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Chat with ${peer.name}") },
+        title = { Text("Chat: ${peer.name}") },
         text = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(260.dp)
+                    .height(280.dp)
             ) {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
@@ -231,17 +259,18 @@ fun ChatDialog(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 2.dp),
+                                .padding(vertical = 3.dp),
                             contentAlignment = if (msg.isFromMe) Alignment.CenterEnd else Alignment.CenterStart
                         ) {
                             Surface(
-                                color = if (msg.isFromMe) MaterialTheme.colorScheme.primary else Color.LightGray,
+                                color = if (msg.isFromMe) MaterialTheme.colorScheme.primary else Color(0xFFE0E0E0),
                                 shape = RoundedCornerShape(8.dp)
                             ) {
                                 Text(
                                     text = msg.text,
                                     color = if (msg.isFromMe) Color.White else Color.Black,
-                                    modifier = Modifier.padding(8.dp)
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    fontSize = 14.sp
                                 )
                             }
                         }
@@ -254,7 +283,8 @@ fun ChatDialog(
                     value = textInput,
                     onValueChange = { textInput = it },
                     placeholder = { Text("Type message...") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
                 )
             }
         },

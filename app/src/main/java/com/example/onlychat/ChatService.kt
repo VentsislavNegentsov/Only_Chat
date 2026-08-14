@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import java.nio.charset.StandardCharsets
 
 data class PeerDevice(val endpointId: String, val name: String)
-data class ChatMessage(val senderId: String, val senderName: String, val text: String, val isFromMe: Boolean)
+data class ChatMessage(val text: String, val isFromMe: Boolean, val timestamp: Long = System.currentTimeMillis())
 
 class ChatService : Service() {
 
@@ -22,37 +22,42 @@ class ChatService : Service() {
         const val SERVICE_ID = "com.example.onlychat.P2P_CHAT"
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
+        const val ACTION_REFRESH = "ACTION_REFRESH"
 
+        // Discovered Devices List
         private val _discoveredPeers = MutableStateFlow<List<PeerDevice>>(emptyList())
         val discoveredPeers: StateFlow<List<PeerDevice>> = _discoveredPeers
 
-        private val _chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
-        val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages
+        // Chat History map keyed by endpointId (Persists messages per client!)
+        private val _chatHistoryMap = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
+        val chatHistoryMap: StateFlow<Map<String, List<ChatMessage>>> = _chatHistoryMap
 
-        private val _incomingPopup = MutableStateFlow<ChatMessage?>(null)
-        val incomingPopup: StateFlow<ChatMessage?> = _incomingPopup
+        // Currently Active Pop-up Peer (Only 1 popup at a time)
+        private val _activeChatPeer = MutableStateFlow<PeerDevice?>(null)
+        val activeChatPeer: StateFlow<PeerDevice?> = _activeChatPeer
 
-        // Active connections set
-        private val connectedEndpoints = mutableSetOf<String>()
-
-        fun clearPopup() {
-            _incomingPopup.value = null
+        fun setActiveChatPeer(peer: PeerDevice?) {
+            _activeChatPeer.value = peer
         }
 
         private var instance: ChatService? = null
 
-        fun sendMessage(endpointId: String, text: String, deviceName: String) {
+        fun sendMessage(endpointId: String, text: String) {
             instance?.let { service ->
                 val payload = Payload.fromBytes(text.toByteArray(StandardCharsets.UTF_8))
-
-                // Send P2P payload over Nearby Connections
                 Nearby.getConnectionsClient(service).sendPayload(endpointId, payload)
 
-                // Save to local message history
-                _chatMessages.value = _chatMessages.value + ChatMessage(endpointId, deviceName, text, isFromMe = true)
+                // Save message into persistent history for this client
+                val newMessage = ChatMessage(text = text, isFromMe = true)
+                val currentHistory = _chatHistoryMap.value.toMutableMap()
+                val peerMessages = (currentHistory[endpointId] ?: emptyList()) + newMessage
+                currentHistory[endpointId] = peerMessages
+                _chatHistoryMap.value = currentHistory
             }
         }
     }
+
+    private val connectingOrConnected = mutableSetOf<String>()
 
     override fun onCreate() {
         super.onCreate()
@@ -65,8 +70,12 @@ class ChatService : Service() {
                 startForegroundNotification()
                 startP2PDiscovery()
             }
+            ACTION_REFRESH -> {
+                restartDiscovery()
+            }
             ACTION_STOP -> {
                 stopP2PDiscovery()
+                stopForeground(true)
                 stopSelf()
             }
         }
@@ -111,6 +120,17 @@ class ChatService : Service() {
         client.startDiscovery(SERVICE_ID, endpointDiscoveryCallback, discOptions)
     }
 
+    private fun restartDiscovery() {
+        val client = Nearby.getConnectionsClient(this)
+        client.stopDiscovery()
+        client.stopAdvertising()
+        connectingOrConnected.clear()
+        _discoveredPeers.value = emptyList()
+
+        // Brief delay before restarting discovery
+        startP2PDiscovery()
+    }
+
     private fun addOrUpdatePeer(endpointId: String, name: String) {
         val currentList = _discoveredPeers.value.toMutableList()
         val existingIndex = currentList.indexOfFirst { it.endpointId == endpointId }
@@ -127,14 +147,19 @@ class ChatService : Service() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             addOrUpdatePeer(endpointId, info.endpointName)
 
-            // Discoverer requests connection to the advertiser
-            Nearby.getConnectionsClient(this@ChatService)
-                .requestConnection(Build.MODEL ?: "Android Device", endpointId, connectionLifecycleCallback)
-                .addOnFailureListener { /* Ignore if connection request is already pending */ }
+            // RACE CONDITION FIX: Only request if not already connecting or connected
+            if (!connectingOrConnected.contains(endpointId)) {
+                connectingOrConnected.add(endpointId)
+                Nearby.getConnectionsClient(this@ChatService)
+                    .requestConnection(Build.MODEL ?: "Android Device", endpointId, connectionLifecycleCallback)
+                    .addOnFailureListener {
+                        connectingOrConnected.remove(endpointId)
+                    }
+            }
         }
 
         override fun onEndpointLost(endpointId: String) {
-            if (!connectedEndpoints.contains(endpointId)) {
+            if (!connectingOrConnected.contains(endpointId)) {
                 _discoveredPeers.value = _discoveredPeers.value.filter { it.endpointId != endpointId }
             }
         }
@@ -142,24 +167,25 @@ class ChatService : Service() {
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            // FIX: Add peer on BOTH receiving and initiating sides instantly!
+            connectingOrConnected.add(endpointId)
             addOrUpdatePeer(endpointId, info.endpointName)
 
-            // Auto-accept two-way connection
+            // Auto-accept connection on both sides
             Nearby.getConnectionsClient(this@ChatService)
                 .acceptConnection(endpointId, payloadCallback)
+                .addOnFailureListener {
+                    connectingOrConnected.remove(endpointId)
+                }
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
-            if (result.status.isSuccess) {
-                connectedEndpoints.add(endpointId)
-            } else {
-                connectedEndpoints.remove(endpointId)
+            if (!result.status.isSuccess) {
+                connectingOrConnected.remove(endpointId)
             }
         }
 
         override fun onDisconnected(endpointId: String) {
-            connectedEndpoints.remove(endpointId)
+            connectingOrConnected.remove(endpointId)
             _discoveredPeers.value = _discoveredPeers.value.filter { it.endpointId != endpointId }
         }
     }
@@ -169,11 +195,17 @@ class ChatService : Service() {
             val bytes = payload.asBytes() ?: return
             val messageText = String(bytes, StandardCharsets.UTF_8)
             val senderName = _discoveredPeers.value.find { it.endpointId == endpointId }?.name ?: "Nearby Peer"
+            val peer = PeerDevice(endpointId, senderName)
 
-            val incomingMessage = ChatMessage(endpointId, senderName, messageText, isFromMe = false)
+            // 1. Add incoming message to persistent client history
+            val newMessage = ChatMessage(text = messageText, isFromMe = false)
+            val currentHistory = _chatHistoryMap.value.toMutableMap()
+            val peerMessages = (currentHistory[endpointId] ?: emptyList()) + newMessage
+            currentHistory[endpointId] = peerMessages
+            _chatHistoryMap.value = currentHistory
 
-            _chatMessages.value = _chatMessages.value + incomingMessage
-            _incomingPopup.value = incomingMessage
+            // 2. Open pop-up window for this client (Only 1 active popup allowed)
+            _activeChatPeer.value = peer
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {}
@@ -184,7 +216,7 @@ class ChatService : Service() {
         client.stopAdvertising()
         client.stopDiscovery()
         client.stopAllEndpoints()
-        connectedEndpoints.clear()
+        connectingOrConnected.clear()
         _discoveredPeers.value = emptyList()
     }
 
