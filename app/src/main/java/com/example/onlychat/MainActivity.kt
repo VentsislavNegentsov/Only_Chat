@@ -95,6 +95,20 @@ data class ChatMessage(
 )
 
 // ============================================================================
+// CUSTOM CONTRACT FOR FRONT/SELFIE CAMERA
+// ============================================================================
+
+class TakePictureWithFrontCamera : ActivityResultContracts.TakePicture() {
+    override fun createIntent(context: Context, input: Uri): Intent {
+        return super.createIntent(context, input).apply {
+            putExtra("android.intent.extras.CAMERA_FACING", 1)
+            putExtra("android.intent.extras.LENS_FACING_FRONT", 1)
+            putExtra("android.intent.extra.USE_FRONT_CAMERA", true)
+        }
+    }
+}
+
+// ============================================================================
 // UTILITY OBJECTS & STORAGE HELPER
 // ============================================================================
 
@@ -495,8 +509,8 @@ fun ChatFullScreenWindow(
         uri?.let { onSendPhotoUri(it) }
     }
 
-    val fullHdCameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
+    val frontCameraLauncher = rememberLauncherForActivityResult(
+        contract = TakePictureWithFrontCamera()
     ) { success ->
         if (success) {
             tempCameraUri?.let { uri ->
@@ -556,24 +570,64 @@ fun ChatFullScreenWindow(
                             ) {
                                 Column(modifier = Modifier.padding(10.dp)) {
                                     if (msg.base64Image != null) {
-                                        val bitmap = remember(msg.base64Image) {
-                                            ImageUtils.decodeBase64ToBitmap(msg.base64Image)
-                                        }
-                                        bitmap?.let { b ->
-                                            Image(
-                                                bitmap = b.asImageBitmap(),
-                                                contentDescription = "Shared photo",
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .height(180.dp)
-                                                    .clip(RoundedCornerShape(8.dp))
-                                                    .clickable {
-                                                        fullScreenImageBase64 = msg.base64Image
-                                                    },
-                                                contentScale = ContentScale.Crop
-                                            )
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(180.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                        ) {
+                                            val bitmap = remember(msg.base64Image) {
+                                                ImageUtils.decodeBase64ToBitmap(msg.base64Image)
+                                            }
+                                            bitmap?.let { b ->
+                                                Image(
+                                                    bitmap = b.asImageBitmap(),
+                                                    contentDescription = "Shared photo",
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .clickable {
+                                                            if (msg.progress == null || msg.progress >= 1f) {
+                                                                fullScreenImageBase64 = msg.base64Image
+                                                            }
+                                                        },
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                            }
+
+                                            // 🌟 FOREGROUND OVERLAY FOR PHOTO TRANSFER
+                                            if (msg.progress != null && msg.progress < 1f) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .background(Color.Black.copy(alpha = 0.65f))
+                                                        .padding(12.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Column(
+                                                        horizontalAlignment = Alignment.CenterHorizontally
+                                                    ) {
+                                                        Text(
+                                                            text = "Sending Photo (${(msg.progress * 100).toInt()}%)",
+                                                            color = Color.White,
+                                                            fontSize = 12.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                        Spacer(modifier = Modifier.height(8.dp))
+                                                        LinearProgressIndicator(
+                                                            progress = { msg.progress },
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .height(6.dp)
+                                                                .clip(RoundedCornerShape(3.dp)),
+                                                            color = Color(0xFF80D8FF),
+                                                            trackColor = Color.White.copy(alpha = 0.3f)
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
+
                                     if (msg.text.isNotBlank() && msg.base64Image == null) {
                                         Text(
                                             text = msg.text,
@@ -582,8 +636,8 @@ fun ChatFullScreenWindow(
                                         )
                                     }
 
-                                    // Display Progress Bar dynamically when transfer is in progress (< 1.0)
-                                    if (msg.progress != null && msg.progress < 1f) {
+                                    // Fallback progress bar for non-photo messages
+                                    if (msg.base64Image == null && msg.progress != null && msg.progress < 1f) {
                                         Spacer(modifier = Modifier.height(6.dp))
                                         Column {
                                             Row(
@@ -661,7 +715,7 @@ fun ChatFullScreenWindow(
                                     photoFile
                                 )
                                 tempCameraUri = uri
-                                fullHdCameraLauncher.launch(uri)
+                                frontCameraLauncher.launch(uri)
                             } catch (e: Exception) {
                                 e.printStackTrace()
                             }
@@ -670,7 +724,7 @@ fun ChatFullScreenWindow(
                         modifier = Modifier.weight(1f),
                         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
                     ) {
-                        Text("🤳 Camera", fontSize = 11.sp)
+                        Text("🤳 Selfie", fontSize = 11.sp)
                     }
 
                     OutlinedButton(
@@ -825,7 +879,6 @@ class ChatService : Service() {
         private val _activeChatPeer = MutableStateFlow<PeerDevice?>(null)
         val activeChatPeer: StateFlow<PeerDevice?> = _activeChatPeer
 
-        // Tracks Nearby Payload IDs to (PeerName, MessageID) for progress updates
         private val payloadMsgMap = mutableMapOf<Long, Pair<String, String>>()
 
         private var instance: ChatService? = null
@@ -901,13 +954,10 @@ class ChatService : Service() {
         }
 
         val payload = Payload.fromBytes(json.toString().toByteArray(StandardCharsets.UTF_8))
-
-        // Map payload ID to message ID to track sending progress
         payloadMsgMap[payload.id] = Pair(peerName, msgId)
 
         Nearby.getConnectionsClient(this).sendPayload(endpointId, payload)
 
-        // Initialize progress at 0f so progress bar is active during send
         val newMessage = ChatMessage(
             id = msgId,
             text = "[Photo]",
@@ -1128,10 +1178,14 @@ class ChatService : Service() {
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
+            val myName = getDetailedDeviceName()
+
+            // 🛑 Self-Discovery Loopback Guard: Ignore local echoes
+            if (info.endpointName == myName) return
+
             val isOnlyChat = info.serviceId == SERVICE_ID
             addOrUpdatePeer(endpointId, info.endpointName, isOnlyChatActive = isOnlyChat)
 
-            val myName = getDetailedDeviceName()
             if (!connectingOrConnected.contains(endpointId) && myName >= info.endpointName) {
                 connectingOrConnected.add(endpointId)
                 Nearby.getConnectionsClient(this@ChatService)
@@ -1149,6 +1203,11 @@ class ChatService : Service() {
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
+            val myName = getDetailedDeviceName()
+
+            // 🛑 Self-Discovery Loopback Guard: Prevent connection to self
+            if (info.endpointName == myName) return
+
             connectingOrConnected.add(endpointId)
             addOrUpdatePeer(endpointId, info.endpointName, isOnlyChatActive = true)
             Nearby.getConnectionsClient(this@ChatService)
@@ -1234,7 +1293,6 @@ class ChatService : Service() {
             }
         }
 
-        // Live progress update handler for ongoing transfers
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
             val totalBytes = update.totalBytes
             val payloadId = update.payloadId
@@ -1247,7 +1305,6 @@ class ChatService : Service() {
                     val (peerName, msgId) = mappedTarget
                     updateMessageProgress(peerName, msgId, calculatedProgress)
 
-                    // Transfer complete or failed -> clean up mapping
                     if (update.status == PayloadTransferUpdate.Status.SUCCESS ||
                         update.status == PayloadTransferUpdate.Status.FAILURE ||
                         update.status == PayloadTransferUpdate.Status.CANCELED) {
