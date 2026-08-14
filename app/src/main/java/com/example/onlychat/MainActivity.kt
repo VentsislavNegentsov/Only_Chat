@@ -153,7 +153,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Turn screen on and unlock if device receives incoming chat while locked
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -304,7 +303,7 @@ fun MainScreen(
         Spacer(modifier = Modifier.height(6.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🟢 Auto-Refreshing every 5s", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
+            Text("🟢 Auto-Refreshing active", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -313,7 +312,7 @@ fun MainScreen(
 
         if (peers.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Scanning for nearby devices...\nAuto-refresh is active.", color = Color.Gray)
+                Text("Scanning for nearby devices...", color = Color.Gray)
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -361,7 +360,7 @@ fun DeviceCard(
                     ) {}
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (peer.isOnlyChatActive) "OnlyChat Active" else "Disconnected / Other Device",
+                        text = if (peer.isOnlyChatActive) "OnlyChat Active" else "Disconnected / Other",
                         fontSize = 12.sp,
                         color = if (peer.isOnlyChatActive) Color(0xFF2E7D32) else Color.Gray,
                         fontWeight = FontWeight.Medium
@@ -720,7 +719,7 @@ class ChatService : Service() {
                 "Incoming Chat Messages",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Notifies when a nearby device sends a message"
+                description = "Notifies when a nearby device sends a message with an SMS-like sound"
                 enableVibration(true)
                 setSound(soundUri, audioAttributes)
             }
@@ -741,7 +740,7 @@ class ChatService : Service() {
 
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("OnlyChat Active")
-            .setContentText("Scanning and connected to nearby devices...")
+            .setContentText("Listening for incoming messages...")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .build()
@@ -753,9 +752,10 @@ class ChatService : Service() {
         }
     }
 
-    private fun notifyUserAndBringToFront(senderName: String, messagePreview: String) {
+    private fun notifyUserAndBringToFront(senderName: String, messagePreview: String, peer: PeerDevice, msgId: String) {
         val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
 
+        // Play SMS-like notification sound immediately
         try {
             val ringtone = RingtoneManager.getRingtone(applicationContext, soundUri)
             ringtone?.play()
@@ -791,7 +791,11 @@ class ChatService : Service() {
             .build()
 
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(System.currentTimeMillis().toInt(), notification)
+        manager.notify(msgId.hashCode(), notification)
+
+        // Automatically popup/bring dialog to active state
+        _activeChatPeer.value = peer
+        sendAck(peer.endpointId, msgId, "ACK_DELIVERED")
 
         try {
             startActivity(intent)
@@ -835,10 +839,12 @@ class ChatService : Service() {
             val isOnlyChat = info.serviceId == SERVICE_ID
             addOrUpdatePeer(endpointId, info.endpointName, isOnlyChatActive = isOnlyChat)
 
-            if (!connectingOrConnected.contains(endpointId)) {
+            val myName = getDetailedDeviceName()
+            // RESOLUTION: Prevent mutual connection collisions by having only one side initiate request
+            if (!connectingOrConnected.contains(endpointId) && myName >= info.endpointName) {
                 connectingOrConnected.add(endpointId)
                 Nearby.getConnectionsClient(this@ChatService)
-                    .requestConnection(getDetailedDeviceName(), endpointId, connectionLifecycleCallback)
+                    .requestConnection(myName, endpointId, connectionLifecycleCallback)
                     .addOnFailureListener { connectingOrConnected.remove(endpointId) }
             }
         }
@@ -878,11 +884,13 @@ class ChatService : Service() {
 
             try {
                 val json = JSONObject(rawString)
+                val senderName = _discoveredPeers.value.find { it.endpointId == endpointId }?.name ?: "Nearby Peer"
+                val peer = PeerDevice(endpointId, senderName, isOnlyChatActive = true)
+
                 when (json.optString("type")) {
                     "CHAT" -> {
                         val msgId = json.getString("id")
                         val text = json.getString("text")
-                        val senderName = _discoveredPeers.value.find { it.endpointId == endpointId }?.name ?: "Nearby Peer"
 
                         val newMessage = ChatMessage(id = msgId, text = text, isFromMe = false)
                         val currentHistory = _chatHistoryMap.value.toMutableMap()
@@ -890,22 +898,16 @@ class ChatService : Service() {
                         currentHistory[endpointId] = peerMessages
                         _chatHistoryMap.value = currentHistory
 
-                        val peer = PeerDevice(endpointId, senderName, isOnlyChatActive = true)
-                        _activeChatPeer.value = peer
-
-                        sendAck(endpointId, msgId, "ACK_DELIVERED")
-
                         if (_activeChatPeer.value?.endpointId == endpointId) {
                             sendAck(endpointId, msgId, "ACK_READ")
                         }
 
-                        notifyUserAndBringToFront(senderName, text)
+                        notifyUserAndBringToFront(senderName, text, peer, msgId)
                     }
 
                     "PHOTO" -> {
                         val msgId = json.getString("id")
                         val base64Image = json.getString("image")
-                        val senderName = _discoveredPeers.value.find { it.endpointId == endpointId }?.name ?: "Nearby Peer"
 
                         val newMessage = ChatMessage(id = msgId, text = "[Photo]", isFromMe = false, base64Image = base64Image)
                         val currentHistory = _chatHistoryMap.value.toMutableMap()
@@ -913,16 +915,11 @@ class ChatService : Service() {
                         currentHistory[endpointId] = peerMessages
                         _chatHistoryMap.value = currentHistory
 
-                        val peer = PeerDevice(endpointId, senderName, isOnlyChatActive = true)
-                        _activeChatPeer.value = peer
-
-                        sendAck(endpointId, msgId, "ACK_DELIVERED")
-
                         if (_activeChatPeer.value?.endpointId == endpointId) {
                             sendAck(endpointId, msgId, "ACK_READ")
                         }
 
-                        notifyUserAndBringToFront(senderName, "📷 Sent you a photo")
+                        notifyUserAndBringToFront(senderName, "📷 Sent you a photo", peer, msgId)
                     }
 
                     "ACK_DELIVERED" -> {
