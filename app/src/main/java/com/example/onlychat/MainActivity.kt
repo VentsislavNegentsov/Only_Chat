@@ -1,10 +1,10 @@
 package com.example.onlychat
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,7 +13,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.result.launch
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,8 +27,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SentimentSatisfied
 import androidx.compose.material3.*
@@ -45,9 +46,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+fun getTempCameraUri(context: Context): Uri {
+    val tempFile = File.createTempFile("camera_photo_", ".jpg", context.cacheDir)
+    return FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.provider",
+        tempFile
+    )
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -196,6 +208,7 @@ fun MainContent() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PeerListScreen(onSelectPeer: (PeerDevice) -> Unit, onRefresh: () -> Unit) {
+    val context = LocalContext.current
     val peers by ChatService.discoveredPeers.collectAsState()
 
     Scaffold(
@@ -205,6 +218,16 @@ fun PeerListScreen(onSelectPeer: (PeerDevice) -> Unit, onRefresh: () -> Unit) {
                 actions = {
                     IconButton(onClick = onRefresh) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                    IconButton(onClick = {
+                        ChatService.stopService(context)
+                        (context as? Activity)?.finishAffinity()
+                    }) {
+                        Icon(
+                            Icons.Default.PowerSettingsNew,
+                            contentDescription = "Exit App",
+                            tint = MaterialTheme.colorScheme.error
+                        )
                     }
                 }
             )
@@ -245,20 +268,36 @@ fun PeerListScreen(onSelectPeer: (PeerDevice) -> Unit, onRefresh: () -> Unit) {
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(40.dp)
+                                    .size(44.dp)
                                     .background(MaterialTheme.colorScheme.primary, shape = CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
                                     text = peer.name.take(1).uppercase(),
                                     color = Color.White,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp
                                 )
                             }
                             Spacer(modifier = Modifier.width(16.dp))
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(text = peer.name, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                                Text(text = "Tap to open chat", fontSize = 12.sp, color = Color.Gray)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = "App Installed",
+                                        tint = Color(0xFF2E7D32),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "App Installed & Active",
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF2E7D32),
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
                             }
                         }
                     }
@@ -280,6 +319,7 @@ fun ChatScreen(peer: PeerDevice, onBack: () -> Unit) {
     val listState = rememberLazyListState()
 
     var fullscreenImageBase64 by remember { mutableStateOf<String?>(null) }
+    var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
 
     val popularEmojis = remember {
         listOf("😀", "😂", "😍", "👍", "❤️", "🔥", "🎉", "😮", "😢", "🙏", "🚀", "👋", "😎", "💩", "💯", "🤝", "🥳", "✨")
@@ -292,9 +332,11 @@ fun ChatScreen(peer: PeerDevice, onBack: () -> Unit) {
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview()
-    ) { bitmap: Bitmap? ->
-        bitmap?.let { ChatService.sendPhotoBitmap(peer.endpointId, it) }
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success && tempCameraUri != null) {
+            ChatService.sendPhotoUri(context, peer.endpointId, tempCameraUri!!)
+        }
     }
 
     LaunchedEffect(messages.size) {
@@ -307,7 +349,12 @@ fun ChatScreen(peer: PeerDevice, onBack: () -> Unit) {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text(peer.name) },
+                    title = {
+                        Column {
+                            Text(peer.name, fontSize = 18.sp)
+                            Text("App Installed", fontSize = 11.sp, color = Color(0xFF2E7D32))
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -344,7 +391,7 @@ fun ChatScreen(peer: PeerDevice, onBack: () -> Unit) {
                     }
                 }
 
-                // Quick Emoticons Bar (Toggleable)
+                // Quick Emoticons Bar
                 if (showEmojiPicker) {
                     LazyRow(
                         modifier = Modifier
@@ -368,7 +415,7 @@ fun ChatScreen(peer: PeerDevice, onBack: () -> Unit) {
                     }
                 }
 
-                // Input Controls
+                // Input Controls Bar
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -385,7 +432,11 @@ fun ChatScreen(peer: PeerDevice, onBack: () -> Unit) {
                     IconButton(onClick = { galleryLauncher.launch("image/*") }) {
                         Icon(Icons.Default.Photo, contentDescription = "Gallery")
                     }
-                    IconButton(onClick = { cameraLauncher.launch() }) {
+                    IconButton(onClick = {
+                        val uri = getTempCameraUri(context)
+                        tempCameraUri = uri
+                        cameraLauncher.launch(uri)
+                    }) {
                         Icon(Icons.Default.CameraAlt, contentDescription = "Camera")
                     }
                     TextField(
@@ -421,7 +472,7 @@ fun ChatScreen(peer: PeerDevice, onBack: () -> Unit) {
             }
         }
 
-        // Full-Screen Image Viewer Overlay
+        // Full Screen Photo Modal Overlay
         fullscreenImageBase64?.let { base64Str ->
             val fullBitmap = remember(base64Str) {
                 ImageUtils.decodeBase64ToBitmap(base64Str)
@@ -472,7 +523,6 @@ fun ChatMessageItem(message: ChatMessage, onPhotoClick: (String) -> Unit) {
         ) {
             Column(modifier = Modifier.padding(8.dp)) {
 
-                // Photo Payload
                 if (message.base64Image != null) {
                     val bitmap = remember(message.base64Image) {
                         ImageUtils.decodeBase64ToBitmap(message.base64Image!!)
@@ -493,7 +543,6 @@ fun ChatMessageItem(message: ChatMessage, onPhotoClick: (String) -> Unit) {
                     }
                 }
 
-                // Text Payload
                 if (message.text.isNotEmpty() && message.text != "[Photo]") {
                     if (message.base64Image != null) Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -503,7 +552,6 @@ fun ChatMessageItem(message: ChatMessage, onPhotoClick: (String) -> Unit) {
                     )
                 }
 
-                // Status & Timestamp
                 Spacer(modifier = Modifier.height(2.dp))
                 Row(
                     modifier = Modifier.align(Alignment.End),

@@ -18,6 +18,7 @@ import com.google.android.gms.nearby.connection.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
@@ -25,7 +26,12 @@ import java.util.UUID
 
 enum class MessageStatus { SENT, DELIVERED, READ }
 
-data class PeerDevice(val endpointId: String, val name: String)
+// isAppInstalled is true for all devices found via Nearby Connections SERVICE_ID
+data class PeerDevice(
+    val endpointId: String,
+    val name: String,
+    val isAppInstalled: Boolean = true
+)
 
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
@@ -52,7 +58,7 @@ object ImageUtils {
 
     fun compressBitmapToBase64(bitmap: Bitmap): String? {
         return try {
-            val maxDimension = 600
+            val maxDimension = 1920 // Full HD Resolution
             val width = bitmap.width
             val height = bitmap.height
             val scaledBitmap = if (width > maxDimension || height > maxDimension) {
@@ -65,7 +71,7 @@ object ImageUtils {
             }
 
             val outputStream = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 65, outputStream)
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
             val byteArray = outputStream.toByteArray()
             Base64.encodeToString(byteArray, Base64.NO_WRAP)
         } catch (e: Exception) {
@@ -92,6 +98,7 @@ class ChatService : Service() {
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
         const val ACTION_REFRESH = "ACTION_REFRESH"
+        private const val PREFS_NAME = "only_chat_history_prefs"
 
         private val _discoveredPeers = MutableStateFlow<List<PeerDevice>>(emptyList())
         val discoveredPeers: StateFlow<List<PeerDevice>> = _discoveredPeers
@@ -129,6 +136,8 @@ class ChatService : Service() {
                 val peerMessages = (currentHistory[endpointId] ?: emptyList()) + newMessage
                 currentHistory[endpointId] = peerMessages
                 _chatHistoryMap.value = currentHistory
+
+                service.saveHistoryForEndpoint(endpointId, peerMessages)
             }
         }
 
@@ -148,6 +157,13 @@ class ChatService : Service() {
         fun sendPhotoBitmap(endpointId: String, bitmap: Bitmap) {
             val base64 = ImageUtils.compressBitmapToBase64(bitmap) ?: return
             instance?.sendPhotoMessage(endpointId, base64)
+        }
+
+        fun stopService(context: Context) {
+            val intent = Intent(context, ChatService::class.java).apply {
+                action = ACTION_STOP
+            }
+            context.startService(intent)
         }
     }
 
@@ -174,6 +190,8 @@ class ChatService : Service() {
         val peerMessages = (currentHistory[endpointId] ?: emptyList()) + newMessage
         currentHistory[endpointId] = peerMessages
         _chatHistoryMap.value = currentHistory
+
+        saveHistoryForEndpoint(endpointId, peerMessages)
     }
 
     private val connectingOrConnected = mutableSetOf<String>()
@@ -194,16 +212,80 @@ class ChatService : Service() {
             ACTION_REFRESH -> restartDiscovery()
             ACTION_STOP -> {
                 stopP2PDiscovery()
-                stopForeground(true)
+                val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                manager.cancelAll()
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
                 stopSelf()
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     fun getDetailedDeviceName(): String {
         val model = Build.MODEL
         return if (model.length > 20) model.substring(0, 20) else model
+    }
+
+    private fun saveHistoryForEndpoint(endpointId: String, messages: List<ChatMessage>) {
+        val peerName = _discoveredPeers.value.find { it.endpointId == endpointId }?.name ?: return
+        saveHistoryForPeerName(peerName, messages)
+    }
+
+    private fun saveHistoryForPeerName(peerName: String, messages: List<ChatMessage>) {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val jsonArray = JSONArray()
+
+        messages.forEach { msg ->
+            val jsonObj = JSONObject().apply {
+                put("id", msg.id)
+                put("text", msg.text)
+                put("isFromMe", msg.isFromMe)
+                put("status", msg.status.name)
+                put("timestamp", msg.timestamp)
+                if (msg.base64Image != null) {
+                    put("base64Image", msg.base64Image)
+                }
+            }
+            jsonArray.put(jsonObj)
+        }
+
+        prefs.edit().putString("chat_history_$peerName", jsonArray.toString()).apply()
+    }
+
+    private fun loadHistoryForPeerName(peerName: String): List<ChatMessage> {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val jsonString = prefs.getString("chat_history_$peerName", null) ?: return emptyList()
+        val list = mutableListOf<ChatMessage>()
+
+        try {
+            val jsonArray = JSONArray(jsonString)
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                val statusStr = obj.optString("status", MessageStatus.SENT.name)
+                val status = try { MessageStatus.valueOf(statusStr) } catch (e: Exception) { MessageStatus.SENT }
+
+                list.add(
+                    ChatMessage(
+                        id = obj.getString("id"),
+                        text = obj.optString("text", ""),
+                        isFromMe = obj.getBoolean("isFromMe"),
+                        status = status,
+                        timestamp = obj.getLong("timestamp"),
+                        base64Image = if (obj.has("base64Image")) obj.getString("base64Image") else null
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        return list
     }
 
     private fun createNotificationChannels() {
@@ -216,7 +298,6 @@ class ChatService : Service() {
 
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-            // Incoming Messages Channel
             val msgChannel = NotificationChannel(
                 "incoming_messages_channel",
                 "Incoming Chat Messages",
@@ -227,7 +308,6 @@ class ChatService : Service() {
                 setSound(soundUri, audioAttributes)
             }
 
-            // Device Discovered Alerts Channel
             val deviceChannel = NotificationChannel(
                 "device_found_channel",
                 "Device Discovered Alerts",
@@ -364,8 +444,9 @@ class ChatService : Service() {
         val client = Nearby.getConnectionsClient(this)
         val myName = getDetailedDeviceName()
 
-        val advOptions = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
-        val discOptions = DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
+        // P2P_STAR strategy dramatically speeds up discovery & connection handshakes
+        val advOptions = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_STAR).build()
+        val discOptions = DiscoveryOptions.Builder().setStrategy(Strategy.P2P_STAR).build()
 
         client.startAdvertising(myName, SERVICE_ID, connectionLifecycleCallback, advOptions)
         client.startDiscovery(SERVICE_ID, endpointDiscoveryCallback, discOptions)
@@ -379,40 +460,48 @@ class ChatService : Service() {
     }
 
     private fun addOrUpdatePeer(endpointId: String, name: String) {
-        // Strict Filter: Never add own device
         if (name.equals(getDetailedDeviceName(), ignoreCase = true)) return
 
         val currentList = _discoveredPeers.value.toMutableList()
         val existingIndex = currentList.indexOfFirst { it.endpointId == endpointId }
         if (existingIndex != -1) {
-            currentList[existingIndex] = PeerDevice(endpointId, name)
+            currentList[existingIndex] = PeerDevice(endpointId, name, isAppInstalled = true)
         } else {
-            currentList.add(PeerDevice(endpointId, name))
+            currentList.add(PeerDevice(endpointId, name, isAppInstalled = true))
         }
         _discoveredPeers.value = currentList
+
+        if (!_chatHistoryMap.value.containsKey(endpointId)) {
+            val savedHistory = loadHistoryForPeerName(name)
+            if (savedHistory.isNotEmpty()) {
+                val currentHistory = _chatHistoryMap.value.toMutableMap()
+                currentHistory[endpointId] = savedHistory
+                _chatHistoryMap.value = currentHistory
+            }
+        }
     }
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            // Ignore if discovered endpoint is own device
-            if (info.endpointName.equals(getDetailedDeviceName(), ignoreCase = true)) {
-                return
-            }
+            val myName = getDetailedDeviceName()
+            if (info.endpointName.equals(myName, ignoreCase = true)) return
 
             val isNewDevice = _discoveredPeers.value.none { it.endpointId == endpointId }
 
             addOrUpdatePeer(endpointId, info.endpointName)
 
-            // Trigger sound, notification, and full-screen popup on device discovery
             if (isNewDevice) {
                 notifyDeviceFoundAndBringToFront(info.endpointName)
             }
 
+            // TIE-BREAKER: Prevents dual-side connection requests from locking up radios simultaneously
             if (!connectingOrConnected.contains(endpointId)) {
-                connectingOrConnected.add(endpointId)
-                Nearby.getConnectionsClient(this@ChatService)
-                    .requestConnection(getDetailedDeviceName(), endpointId, connectionLifecycleCallback)
-                    .addOnFailureListener { connectingOrConnected.remove(endpointId) }
+                if (myName > info.endpointName) {
+                    connectingOrConnected.add(endpointId)
+                    Nearby.getConnectionsClient(this@ChatService)
+                        .requestConnection(myName, endpointId, connectionLifecycleCallback)
+                        .addOnFailureListener { connectingOrConnected.remove(endpointId) }
+                }
             }
         }
 
@@ -465,7 +554,9 @@ class ChatService : Service() {
                         currentHistory[endpointId] = peerMessages
                         _chatHistoryMap.value = currentHistory
 
-                        val peer = PeerDevice(endpointId, senderName)
+                        saveHistoryForPeerName(senderName, peerMessages)
+
+                        val peer = PeerDevice(endpointId, senderName, isAppInstalled = true)
                         _activeChatPeer.value = peer
 
                         sendAck(endpointId, msgId, "ACK_DELIVERED")
@@ -488,7 +579,9 @@ class ChatService : Service() {
                         currentHistory[endpointId] = peerMessages
                         _chatHistoryMap.value = currentHistory
 
-                        val peer = PeerDevice(endpointId, senderName)
+                        saveHistoryForPeerName(senderName, peerMessages)
+
+                        val peer = PeerDevice(endpointId, senderName, isAppInstalled = true)
                         _activeChatPeer.value = peer
 
                         sendAck(endpointId, msgId, "ACK_DELIVERED")
@@ -545,6 +638,8 @@ class ChatService : Service() {
                 peerMessages[index] = existing.copy(status = newStatus)
                 currentHistory[endpointId] = peerMessages
                 _chatHistoryMap.value = currentHistory
+
+                saveHistoryForEndpoint(endpointId, peerMessages)
             }
         }
     }
@@ -556,6 +651,7 @@ class ChatService : Service() {
         client.stopAllEndpoints()
         connectingOrConnected.clear()
         _discoveredPeers.value = emptyList()
+        _activeChatPeer.value = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
