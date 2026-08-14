@@ -107,7 +107,7 @@ object ImageUtils {
 
     fun compressBitmapToBase64(bitmap: Bitmap): String? {
         return try {
-            val maxDimension = 1920 // Full HD resolution cap
+            val maxDimension = 1920 // Full HD cap
             val width = bitmap.width
             val height = bitmap.height
             val scaledBitmap = if (width > maxDimension || height > maxDimension) {
@@ -120,7 +120,7 @@ object ImageUtils {
             }
 
             val outputStream = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream) // High quality Full HD
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
             val byteArray = outputStream.toByteArray()
             Base64.encodeToString(byteArray, Base64.NO_WRAP)
         } catch (e: Exception) {
@@ -197,10 +197,9 @@ class MainActivity : ComponentActivity() {
                                 peer = peer,
                                 messages = peerMessages,
                                 onDismiss = { ChatService.setActiveChatPeer(null) },
-                                onSendMessage = { text -> ChatService.sendMessage(peer.endpointId, text) },
-                                onSendWhoAmI = { ChatService.sendWhoAmI(peer.endpointId) },
-                                onSendPhotoUri = { uri -> ChatService.sendPhotoUri(context, peer.endpointId, uri) },
-                                onSendPhotoBitmap = { bitmap -> ChatService.sendPhotoBitmap(peer.endpointId, bitmap) }
+                                onSendMessage = { text -> ChatService.sendMessage(context, peer.endpointId, text) },
+                                onSendWhoAmI = { ChatService.sendWhoAmI(context, peer.endpointId) },
+                                onSendPhotoUri = { uri -> ChatService.sendPhotoUri(context, peer.endpointId, uri) }
                             )
                         }
                     }
@@ -275,7 +274,7 @@ fun MainScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding() // Pushes content below status bar, camera cutout, and clock
+            .statusBarsPadding()
             .padding(20.dp)
     ) {
         Row(
@@ -383,14 +382,12 @@ fun ChatPopupDialog(
     onDismiss: () -> Unit,
     onSendMessage: (String) -> Unit,
     onSendWhoAmI: () -> Unit,
-    onSendPhotoUri: (Uri) -> Unit,
-    onSendPhotoBitmap: (Bitmap) -> Unit
+    onSendPhotoUri: (Uri) -> Unit
 ) {
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val context = LocalContext.current
 
-    // State to handle full-screen photo viewing
     var fullScreenImageBase64 by remember { mutableStateOf<String?>(null) }
     var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
 
@@ -454,7 +451,6 @@ fun ChatPopupDialog(
                                                         .heightIn(max = 200.dp)
                                                         .clip(RoundedCornerShape(8.dp))
                                                         .clickable {
-                                                            // Open Full Screen Photo on click
                                                             fullScreenImageBase64 = msg.base64Image
                                                         },
                                                     contentScale = ContentScale.Crop
@@ -557,7 +553,6 @@ fun ChatPopupDialog(
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.95f))
                     .clickable {
-                        // Clicking anywhere returns back to chat
                         fullScreenImageBase64 = null
                     },
                 contentAlignment = Alignment.Center
@@ -570,7 +565,6 @@ fun ChatPopupDialog(
                         modifier = Modifier
                             .fillMaxSize()
                             .clickable {
-                                // Clicking image again returns back to chat
                                 fullScreenImageBase64 = null
                             },
                         contentScale = ContentScale.Fit
@@ -658,47 +652,48 @@ class ChatService : Service() {
             }
         }
 
-        fun sendMessage(endpointId: String, text: String) {
-            instance?.let { service ->
-                val msgId = UUID.randomUUID().toString()
-
-                val json = JSONObject().apply {
-                    put("type", "CHAT")
-                    put("id", msgId)
-                    put("text", text)
+        fun sendMessage(context: Context, endpointId: String, text: String) {
+            val service = instance
+            if (service == null) {
+                val intent = Intent(context, ChatService::class.java).apply { action = ACTION_START }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
                 }
-
-                val payload = Payload.fromBytes(json.toString().toByteArray(StandardCharsets.UTF_8))
-                Nearby.getConnectionsClient(service).sendPayload(endpointId, payload)
-
-                val newMessage = ChatMessage(id = msgId, text = text, isFromMe = true, status = MessageStatus.SENT)
-                val currentHistory = _chatHistoryMap.value.toMutableMap()
-                val peerMessages = (currentHistory[endpointId] ?: emptyList()) + newMessage
-                currentHistory[endpointId] = peerMessages
-                _chatHistoryMap.value = currentHistory
             }
+
+            val msgId = UUID.randomUUID().toString()
+            val json = JSONObject().apply {
+                put("type", "CHAT")
+                put("id", msgId)
+                put("text", text)
+            }
+
+            val payload = Payload.fromBytes(json.toString().toByteArray(StandardCharsets.UTF_8))
+            Nearby.getConnectionsClient(context).sendPayload(endpointId, payload)
+
+            val newMessage = ChatMessage(id = msgId, text = text, isFromMe = true, status = MessageStatus.SENT)
+            val currentHistory = _chatHistoryMap.value.toMutableMap()
+            val peerMessages = (currentHistory[endpointId] ?: emptyList()) + newMessage
+            currentHistory[endpointId] = peerMessages
+            _chatHistoryMap.value = currentHistory
         }
 
-        fun sendWhoAmI(endpointId: String) {
-            instance?.let { service ->
-                val myDetails = service.getDetailedDeviceName()
-                val whoAmIMessage = "👤 Device Info: $myDetails"
-                sendMessage(endpointId, whoAmIMessage)
-            }
+        fun sendWhoAmI(context: Context, endpointId: String) {
+            val service = instance ?: return
+            val myDetails = service.getDetailedDeviceName()
+            val whoAmIMessage = "👤 Device Info: $myDetails"
+            sendMessage(context, endpointId, whoAmIMessage)
         }
 
         fun sendPhotoUri(context: Context, endpointId: String, uri: Uri) {
             val base64 = ImageUtils.compressUriToBase64(context, uri) ?: return
-            instance?.sendPhotoMessage(endpointId, base64)
-        }
-
-        fun sendPhotoBitmap(endpointId: String, bitmap: Bitmap) {
-            val base64 = ImageUtils.compressBitmapToBase64(bitmap) ?: return
-            instance?.sendPhotoMessage(endpointId, base64)
+            instance?.sendPhotoMessage(context, endpointId, base64)
         }
     }
 
-    private fun sendPhotoMessage(endpointId: String, base64Image: String) {
+    private fun sendPhotoMessage(context: Context, endpointId: String, base64Image: String) {
         val msgId = UUID.randomUUID().toString()
 
         val json = JSONObject().apply {
@@ -725,6 +720,7 @@ class ChatService : Service() {
 
     private val connectingOrConnected = mutableSetOf<String>()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val uniqueSessionSuffix = UUID.randomUUID().toString().take(4)
 
     override fun onCreate() {
         super.onCreate()
@@ -733,6 +729,7 @@ class ChatService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        instance = this
         when (intent?.action) {
             ACTION_START -> {
                 startForegroundNotification()
@@ -755,7 +752,8 @@ class ChatService : Service() {
 
     fun getDetailedDeviceName(): String {
         val model = Build.MODEL
-        return if (model.length > 20) model.substring(0, 20) else model
+        val baseName = if (model.length > 15) model.substring(0, 15) else model
+        return "$baseName ($uniqueSessionSuffix)"
     }
 
     private fun createMessageNotificationChannel() {
