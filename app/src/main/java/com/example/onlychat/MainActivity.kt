@@ -26,6 +26,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -51,6 +53,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
+import androidx.core.content.FileProvider
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.*
 import kotlinx.coroutines.*
@@ -58,6 +61,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import kotlin.system.exitProcess
@@ -103,7 +107,7 @@ object ImageUtils {
 
     fun compressBitmapToBase64(bitmap: Bitmap): String? {
         return try {
-            val maxDimension = 600
+            val maxDimension = 1920 // Full HD resolution cap
             val width = bitmap.width
             val height = bitmap.height
             val scaledBitmap = if (width > maxDimension || height > maxDimension) {
@@ -116,7 +120,7 @@ object ImageUtils {
             }
 
             val outputStream = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 65, outputStream)
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream) // High quality Full HD
             val byteArray = outputStream.toByteArray()
             Base64.encodeToString(byteArray, Base64.NO_WRAP)
         } catch (e: Exception) {
@@ -271,6 +275,7 @@ fun MainScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .statusBarsPadding() // Pushes content below status bar, camera cutout, and clock
             .padding(20.dp)
     ) {
         Row(
@@ -383,6 +388,11 @@ fun ChatPopupDialog(
 ) {
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val context = LocalContext.current
+
+    // State to handle full-screen photo viewing
+    var fullScreenImageBase64 by remember { mutableStateOf<String?>(null) }
+    var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
 
     val photoGalleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -390,12 +400,13 @@ fun ChatPopupDialog(
         uri?.let { onSendPhotoUri(it) }
     }
 
-    val frontCameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val bitmap = result.data?.extras?.get("data") as? Bitmap
-            bitmap?.let { b -> onSendPhotoBitmap(b) }
+    val fullHdCameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success) {
+            tempCameraUri?.let { uri ->
+                onSendPhotoUri(uri)
+            }
         }
     }
 
@@ -405,128 +416,169 @@ fun ChatPopupDialog(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Chat: ${peer.name}", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth().height(360.dp)) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .weight(1f)
-                        .scrollbar(listState, width = 4.dp, color = MaterialTheme.colorScheme.primary),
-                    contentPadding = PaddingValues(end = 8.dp)
-                ) {
-                    items(messages) { msg ->
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            contentAlignment = if (msg.isFromMe) Alignment.CenterEnd else Alignment.CenterStart
-                        ) {
-                            Surface(
-                                color = if (msg.isFromMe) MaterialTheme.colorScheme.primary else Color(0xFFE0E0E0),
-                                shape = RoundedCornerShape(10.dp)
+    Box(modifier = Modifier.fillMaxSize()) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Chat: ${peer.name}", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth().height(360.dp)) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .scrollbar(listState, width = 4.dp, color = MaterialTheme.colorScheme.primary),
+                        contentPadding = PaddingValues(end = 8.dp)
+                    ) {
+                        items(messages) { msg ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                contentAlignment = if (msg.isFromMe) Alignment.CenterEnd else Alignment.CenterStart
                             ) {
-                                Column(modifier = Modifier.padding(8.dp)) {
-                                    if (msg.base64Image != null) {
-                                        val bitmap = remember(msg.base64Image) {
-                                            ImageUtils.decodeBase64ToBitmap(msg.base64Image)
+                                Surface(
+                                    color = if (msg.isFromMe) MaterialTheme.colorScheme.primary else Color(0xFFE0E0E0),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        if (msg.base64Image != null) {
+                                            val bitmap = remember(msg.base64Image) {
+                                                ImageUtils.decodeBase64ToBitmap(msg.base64Image)
+                                            }
+                                            bitmap?.let { b ->
+                                                Image(
+                                                    bitmap = b.asImageBitmap(),
+                                                    contentDescription = "Shared photo",
+                                                    modifier = Modifier
+                                                        .widthIn(max = 200.dp)
+                                                        .heightIn(max = 200.dp)
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .clickable {
+                                                            // Open Full Screen Photo on click
+                                                            fullScreenImageBase64 = msg.base64Image
+                                                        },
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                            }
                                         }
-                                        bitmap?.let { b ->
-                                            Image(
-                                                bitmap = b.asImageBitmap(),
-                                                contentDescription = "Shared photo",
-                                                modifier = Modifier
-                                                    .widthIn(max = 200.dp)
-                                                    .heightIn(max = 200.dp)
-                                                    .clip(RoundedCornerShape(8.dp)),
-                                                contentScale = ContentScale.Crop
+                                        if (msg.text.isNotBlank() && msg.base64Image == null) {
+                                            Text(
+                                                text = msg.text,
+                                                color = if (msg.isFromMe) Color.White else Color.Black,
+                                                fontSize = 14.sp
                                             )
                                         }
-                                    }
-                                    if (msg.text.isNotBlank() && msg.base64Image == null) {
-                                        Text(
-                                            text = msg.text,
-                                            color = if (msg.isFromMe) Color.White else Color.Black,
-                                            fontSize = 14.sp
-                                        )
-                                    }
-                                    if (msg.isFromMe) {
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                        StatusSymbolIndicator(msg.status)
+                                        if (msg.isFromMe) {
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            StatusSymbolIndicator(msg.status)
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { photoGalleryLauncher.launch("image/*") },
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                        ) {
+                            Text("📷 Gallery", fontSize = 11.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                try {
+                                    val photoFile = File(context.cacheDir, "selfie_${System.currentTimeMillis()}.jpg")
+                                    val uri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.fileprovider",
+                                        photoFile
+                                    )
+                                    tempCameraUri = uri
+                                    fullHdCameraLauncher.launch(uri)
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                        ) {
+                            Text("🤳 Selfie (Full HD)", fontSize = 11.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = onSendWhoAmI,
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                        ) {
+                            Text("👤 Who Am I", fontSize = 11.sp)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    OutlinedTextField(
+                        value = textInput,
+                        onValueChange = { textInput = it },
+                        placeholder = { Text("Type message...") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
                 }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { photoGalleryLauncher.launch("image/*") },
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
-                    ) {
-                        Text("📷 Gallery", fontSize = 11.sp)
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (textInput.isNotBlank()) {
+                        onSendMessage(textInput)
+                        textInput = ""
                     }
-
-                    OutlinedButton(
-                        onClick = {
-                            val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                                putExtra("android.intent.extras.CAMERA_FACING", 1)
-                                putExtra("android.intent.extras.LENS_FACING_FRONT", 1)
-                                putExtra("usefrontcamera", true)
-                            }
-                            frontCameraLauncher.launch(intent)
-                        },
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
-                    ) {
-                        Text("🤳 Selfie", fontSize = 11.sp)
-                    }
-
-                    OutlinedButton(
-                        onClick = onSendWhoAmI,
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
-                    ) {
-                        Text("👤 Who Am I", fontSize = 11.sp)
-                    }
+                }) {
+                    Text("Send")
                 }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                OutlinedTextField(
-                    value = textInput,
-                    onValueChange = { textInput = it },
-                    placeholder = { Text("Type message...") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) {
+                    Text("Close")
+                }
             }
-        },
-        confirmButton = {
-            Button(onClick = {
-                if (textInput.isNotBlank()) {
-                    onSendMessage(textInput)
-                    textInput = ""
+        )
+
+        // Full Screen Photo Viewer Overlay
+        fullScreenImageBase64?.let { base64 ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.95f))
+                    .clickable {
+                        // Clicking anywhere returns back to chat
+                        fullScreenImageBase64 = null
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                val bitmap = remember(base64) { ImageUtils.decodeBase64ToBitmap(base64) }
+                bitmap?.let { b ->
+                    Image(
+                        bitmap = b.asImageBitmap(),
+                        contentDescription = "Full Screen Photo",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable {
+                                // Clicking image again returns back to chat
+                                fullScreenImageBase64 = null
+                            },
+                        contentScale = ContentScale.Fit
+                    )
                 }
-            }) {
-                Text("Send")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close")
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -755,7 +807,6 @@ class ChatService : Service() {
     private fun notifyUserAndBringToFront(senderName: String, messagePreview: String, peer: PeerDevice, msgId: String) {
         val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
 
-        // Play SMS-like notification sound immediately
         try {
             val ringtone = RingtoneManager.getRingtone(applicationContext, soundUri)
             ringtone?.play()
@@ -793,7 +844,6 @@ class ChatService : Service() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(msgId.hashCode(), notification)
 
-        // Automatically popup/bring dialog to active state
         _activeChatPeer.value = peer
         sendAck(peer.endpointId, msgId, "ACK_DELIVERED")
 
@@ -840,7 +890,6 @@ class ChatService : Service() {
             addOrUpdatePeer(endpointId, info.endpointName, isOnlyChatActive = isOnlyChat)
 
             val myName = getDetailedDeviceName()
-            // RESOLUTION: Prevent mutual connection collisions by having only one side initiate request
             if (!connectingOrConnected.contains(endpointId) && myName >= info.endpointName) {
                 connectingOrConnected.add(endpointId)
                 Nearby.getConnectionsClient(this@ChatService)
