@@ -54,11 +54,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -76,7 +80,8 @@ enum class MessageStatus { SENT, DELIVERED, READ }
 data class PeerDevice(
     val endpointId: String,
     val name: String,
-    val isOnlyChatActive: Boolean = true
+    val isOnlyChatActive: Boolean = true,
+    val signalQuality: String = "📶 Strong"
 )
 
 data class ChatMessage(
@@ -90,8 +95,77 @@ data class ChatMessage(
 )
 
 // ============================================================================
-// UTILITY OBJECTS
+// UTILITY OBJECTS & STORAGE HELPER
 // ============================================================================
+
+object ChatStorageHelper {
+    private const val FILE_NAME = "chat_history_v2.json"
+
+    fun saveHistory(context: Context, history: Map<String, List<ChatMessage>>) {
+        try {
+            val rootObject = JSONObject()
+            for ((peerName, messages) in history) {
+                val array = JSONArray()
+                for (msg in messages) {
+                    val obj = JSONObject().apply {
+                        put("id", msg.id)
+                        put("text", msg.text)
+                        put("isFromMe", msg.isFromMe)
+                        put("status", msg.status.name)
+                        put("timestamp", msg.timestamp)
+                        put("base64Image", msg.base64Image ?: "")
+                        put("progress", msg.progress ?: 1.0)
+                    }
+                    array.put(obj)
+                }
+                rootObject.put(peerName, array)
+            }
+            val file = File(context.filesDir, FILE_NAME)
+            file.writeText(rootObject.toString(), StandardCharsets.UTF_8)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun loadHistory(context: Context): Map<String, List<ChatMessage>> {
+        val historyMap = mutableMapOf<String, List<ChatMessage>>()
+        try {
+            val file = File(context.filesDir, FILE_NAME)
+            if (!file.exists()) return historyMap
+
+            val content = file.readText(StandardCharsets.UTF_8)
+            if (content.isBlank()) return historyMap
+
+            val rootObject = JSONObject(content)
+            val keys = rootObject.keys()
+
+            while (keys.hasNext()) {
+                val peerName = keys.next()
+                val array = rootObject.getJSONArray(peerName)
+                val msgList = mutableListOf<ChatMessage>()
+
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val imgStr = obj.optString("base64Image", "")
+                    val msg = ChatMessage(
+                        id = obj.optString("id", UUID.randomUUID().toString()),
+                        text = obj.optString("text", ""),
+                        isFromMe = obj.optBoolean("isFromMe", true),
+                        status = try { MessageStatus.valueOf(obj.optString("status", "SENT")) } catch (e: Exception) { MessageStatus.SENT },
+                        timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
+                        base64Image = if (imgStr.isNotEmpty()) imgStr else null,
+                        progress = obj.optDouble("progress", 1.0).toFloat()
+                    )
+                    msgList.add(msg)
+                }
+                historyMap[peerName] = msgList
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return historyMap
+    }
+}
 
 object ImageUtils {
     fun compressUriToBase64(context: Context, uri: Uri): String? {
@@ -109,7 +183,7 @@ object ImageUtils {
 
     fun compressBitmapToBase64(bitmap: Bitmap): String? {
         return try {
-            val maxDimension = 720 // 720p cap for fast transfer
+            val maxDimension = 1080
             val width = bitmap.width
             val height = bitmap.height
             val scaledBitmap = if (width > maxDimension || height > maxDimension) {
@@ -122,7 +196,7 @@ object ImageUtils {
             }
 
             val outputStream = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
             val byteArray = outputStream.toByteArray()
             Base64.encodeToString(byteArray, Base64.NO_WRAP)
         } catch (e: Exception) {
@@ -164,6 +238,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val windowInsetsController = WindowInsetsControllerCompat(window, window.decorView)
+        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+        windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -198,15 +277,15 @@ class MainActivity : ComponentActivity() {
                         )
 
                         activeChatPeer?.let { peer ->
-                            val peerMessages = chatHistoryMap[peer.endpointId] ?: emptyList()
+                            val peerMessages = chatHistoryMap[peer.name] ?: emptyList()
 
                             ChatFullScreenWindow(
                                 peer = peer,
                                 messages = peerMessages,
                                 onDismiss = { ChatService.setActiveChatPeer(null) },
-                                onSendMessage = { text -> ChatService.sendMessage(context, peer.endpointId, text) },
-                                onSendWhoAmI = { ChatService.sendWhoAmI(context, peer.endpointId) },
-                                onSendPhotoUri = { uri -> ChatService.sendPhotoUri(context, peer.endpointId, uri) }
+                                onSendMessage = { text -> ChatService.sendMessage(context, peer.endpointId, peer.name, text) },
+                                onSendWhoAmI = { ChatService.sendWhoAmI(context, peer.endpointId, peer.name) },
+                                onSendPhotoUri = { uri -> ChatService.sendPhotoUri(context, peer.endpointId, peer.name, uri) }
                             )
                         }
                     }
@@ -281,7 +360,6 @@ fun MainScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
             .padding(20.dp)
     ) {
         Row(
@@ -355,7 +433,7 @@ fun DeviceCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = peer.name,
                     fontSize = 15.sp,
@@ -371,12 +449,25 @@ fun DeviceCard(
                     ) {}
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (peer.isOnlyChatActive) "OnlyChat Active" else "Disconnected / Other",
+                        text = if (peer.isOnlyChatActive) "OnlyChat Active" else "Disconnected",
                         fontSize = 12.sp,
                         color = if (peer.isOnlyChatActive) Color(0xFF2E7D32) else Color.Gray,
                         fontWeight = FontWeight.Medium
                     )
                 }
+            }
+
+            Surface(
+                color = MaterialTheme.colorScheme.primaryContainer,
+                shape = RoundedCornerShape(6.dp)
+            ) {
+                Text(
+                    text = peer.signalQuality,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
             }
         }
     }
@@ -420,7 +511,6 @@ fun ChatFullScreenWindow(
         }
     }
 
-    // Fill application window completely
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -429,42 +519,29 @@ fun ChatFullScreenWindow(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(16.dp)
+                    .imePadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
-                // Header Bar
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = onDismiss) {
-                            Text("←", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Chat: ${peer.name}", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    IconButton(onClick = onDismiss) {
+                        Text("←", fontSize = 22.sp, fontWeight = FontWeight.Bold)
                     }
-                    Button(
-                        onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                    ) {
-                        Text("Close", fontSize = 12.sp)
-                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Chat: ${peer.name}", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
 
-                Divider(modifier = Modifier.padding(vertical = 8.dp))
+                Divider(modifier = Modifier.padding(vertical = 6.dp))
 
-                // Message List History
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                         .scrollbar(listState, width = 4.dp, color = MaterialTheme.colorScheme.primary),
-                    contentPadding = PaddingValues(vertical = 8.dp, horizontal = 4.dp),
+                    contentPadding = PaddingValues(vertical = 4.dp, horizontal = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(messages) { msg ->
@@ -505,13 +582,37 @@ fun ChatFullScreenWindow(
                                         )
                                     }
 
-                                    // Progress bar if transferring
+                                    // Display Progress Bar dynamically when transfer is in progress (< 1.0)
                                     if (msg.progress != null && msg.progress < 1f) {
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        LinearProgressIndicator(
-                                            progress = { msg.progress },
-                                            modifier = Modifier.fillMaxWidth().height(4.dp),
-                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Column {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(
+                                                    text = "Transferring...",
+                                                    fontSize = 10.sp,
+                                                    color = if (msg.isFromMe) Color.White.copy(alpha = 0.8f) else Color.DarkGray
+                                                )
+                                                Text(
+                                                    text = "${(msg.progress * 100).toInt()}%",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (msg.isFromMe) Color.White else Color.Black
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            LinearProgressIndicator(
+                                                progress = { msg.progress },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(6.dp)
+                                                    .clip(RoundedCornerShape(3.dp)),
+                                                color = if (msg.isFromMe) Color.White else MaterialTheme.colorScheme.primary,
+                                                trackColor = Color.Gray.copy(alpha = 0.3f)
+                                            )
+                                        }
                                     }
 
                                     Spacer(modifier = Modifier.height(4.dp))
@@ -520,7 +621,6 @@ fun ChatFullScreenWindow(
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        // Date and time
                                         Text(
                                             text = formatTimestamp(msg.timestamp),
                                             fontSize = 9.sp,
@@ -536,9 +636,8 @@ fun ChatFullScreenWindow(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
-                // Action Bar Tools
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -584,9 +683,8 @@ fun ChatFullScreenWindow(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
-                // Text Input and Send Button Row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -597,26 +695,40 @@ fun ChatFullScreenWindow(
                         onValueChange = { textInput = it },
                         placeholder = { Text("Type message...") },
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(24.dp),
-                        singleLine = true
+                        shape = RoundedCornerShape(16.dp),
+                        minLines = 2,
+                        maxLines = 3
                     )
 
-                    Button(
-                        onClick = {
-                            if (textInput.isNotBlank()) {
-                                onSendMessage(textInput)
-                                textInput = ""
-                            }
-                        },
-                        shape = RoundedCornerShape(24.dp),
-                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp)
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("Send")
+                        Button(
+                            onClick = {
+                                if (textInput.isNotBlank()) {
+                                    onSendMessage(textInput)
+                                    textInput = ""
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Text("Send", fontSize = 12.sp)
+                        }
+
+                        Button(
+                            onClick = onDismiss,
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                        ) {
+                            Text("Close", fontSize = 12.sp)
+                        }
                     }
                 }
             }
 
-            // Foreground Full-Screen Image Viewer Overlay (Ensures pictures are on top & fully visible)
             fullScreenImageBase64?.let { base64 ->
                 Box(
                     modifier = Modifier
@@ -713,26 +825,19 @@ class ChatService : Service() {
         private val _activeChatPeer = MutableStateFlow<PeerDevice?>(null)
         val activeChatPeer: StateFlow<PeerDevice?> = _activeChatPeer
 
+        // Tracks Nearby Payload IDs to (PeerName, MessageID) for progress updates
+        private val payloadMsgMap = mutableMapOf<Long, Pair<String, String>>()
+
         private var instance: ChatService? = null
 
         fun setActiveChatPeer(peer: PeerDevice?) {
             _activeChatPeer.value = peer
             if (peer != null) {
-                instance?.sendReadReceiptsForPeer(peer.endpointId)
+                instance?.sendReadReceiptsForPeer(peer)
             }
         }
 
-        fun sendMessage(context: Context, endpointId: String, text: String) {
-            val service = instance
-            if (service == null) {
-                val intent = Intent(context, ChatService::class.java).apply { action = ACTION_START }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
-            }
-
+        fun sendMessage(context: Context, endpointId: String, peerName: String, text: String) {
             val msgId = UUID.randomUUID().toString()
             val json = JSONObject().apply {
                 put("type", "CHAT")
@@ -741,29 +846,52 @@ class ChatService : Service() {
             }
 
             val payload = Payload.fromBytes(json.toString().toByteArray(StandardCharsets.UTF_8))
+            payloadMsgMap[payload.id] = Pair(peerName, msgId)
+
             Nearby.getConnectionsClient(context).sendPayload(endpointId, payload)
 
             val newMessage = ChatMessage(id = msgId, text = text, isFromMe = true, status = MessageStatus.SENT, progress = 1f)
             val currentHistory = _chatHistoryMap.value.toMutableMap()
-            val peerMessages = (currentHistory[endpointId] ?: emptyList()) + newMessage
-            currentHistory[endpointId] = peerMessages
+            val peerMessages = (currentHistory[peerName] ?: emptyList()) + newMessage
+            currentHistory[peerName] = peerMessages
             _chatHistoryMap.value = currentHistory
+
+            ChatStorageHelper.saveHistory(context, currentHistory)
         }
 
-        fun sendWhoAmI(context: Context, endpointId: String) {
+        fun sendWhoAmI(context: Context, endpointId: String, peerName: String) {
             val service = instance ?: return
-            val myDetails = service.getDetailedDeviceName()
-            val whoAmIMessage = "👤 Device Info: $myDetails"
-            sendMessage(context, endpointId, whoAmIMessage)
+            val manufacturer = Build.MANUFACTURER
+            val model = Build.MODEL
+            val androidVersion = Build.VERSION.RELEASE
+            val sdkVersion = Build.VERSION.SDK_INT
+            val hardware = Build.HARDWARE
+            val board = Build.BOARD
+            val locale = Locale.getDefault().toString()
+            val processors = Runtime.getRuntime().availableProcessors()
+            val totalMemoryMb = Runtime.getRuntime().totalMemory() / (1024 * 1024)
+
+            val detailedInfo = """
+                👤 [Device Profile Info]
+                • Manufacturer & Model: $manufacturer $model
+                • Android Version: v$androidVersion (SDK $sdkVersion)
+                • Hardware / Board: $hardware / $board
+                • Locale / Language: $locale
+                • CPU Cores: $processors
+                • JVM Heap Memory: ${totalMemoryMb} MB
+                • Session Identifier: ${service.getDetailedDeviceName()}
+            """.trimIndent()
+
+            sendMessage(context, endpointId, peerName, detailedInfo)
         }
 
-        fun sendPhotoUri(context: Context, endpointId: String, uri: Uri) {
+        fun sendPhotoUri(context: Context, endpointId: String, peerName: String, uri: Uri) {
             val base64 = ImageUtils.compressUriToBase64(context, uri) ?: return
-            instance?.sendPhotoMessage(context, endpointId, base64)
+            instance?.sendPhotoMessage(context, endpointId, peerName, base64)
         }
     }
 
-    private fun sendPhotoMessage(context: Context, endpointId: String, base64Image: String) {
+    private fun sendPhotoMessage(context: Context, endpointId: String, peerName: String, base64Image: String) {
         val msgId = UUID.randomUUID().toString()
 
         val json = JSONObject().apply {
@@ -773,20 +901,28 @@ class ChatService : Service() {
         }
 
         val payload = Payload.fromBytes(json.toString().toByteArray(StandardCharsets.UTF_8))
+
+        // Map payload ID to message ID to track sending progress
+        payloadMsgMap[payload.id] = Pair(peerName, msgId)
+
         Nearby.getConnectionsClient(this).sendPayload(endpointId, payload)
 
+        // Initialize progress at 0f so progress bar is active during send
         val newMessage = ChatMessage(
             id = msgId,
             text = "[Photo]",
             isFromMe = true,
             status = MessageStatus.SENT,
             base64Image = base64Image,
-            progress = 1f
+            progress = 0f
         )
+
         val currentHistory = _chatHistoryMap.value.toMutableMap()
-        val peerMessages = (currentHistory[endpointId] ?: emptyList()) + newMessage
-        currentHistory[endpointId] = peerMessages
+        val peerMessages = (currentHistory[peerName] ?: emptyList()) + newMessage
+        currentHistory[peerName] = peerMessages
         _chatHistoryMap.value = currentHistory
+
+        ChatStorageHelper.saveHistory(context, currentHistory)
     }
 
     private val connectingOrConnected = mutableSetOf<String>()
@@ -796,7 +932,10 @@ class ChatService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        createMessageNotificationChannel()
+        createNotificationChannels()
+
+        val savedHistory = ChatStorageHelper.loadHistory(this)
+        _chatHistoryMap.value = savedHistory
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -827,7 +966,7 @@ class ChatService : Service() {
         return "$baseName ($uniqueSessionSuffix)"
     }
 
-    private fun createMessageNotificationChannel() {
+    private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
             val audioAttributes = AudioAttributes.Builder()
@@ -837,10 +976,10 @@ class ChatService : Service() {
 
             val channel = NotificationChannel(
                 "incoming_messages_channel",
-                "Incoming Chat Messages",
+                "OnlyChat Alerts & Messages",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Notifies when a nearby device sends a message with an SMS-like sound"
+                description = "Notifies when nearby devices are discovered or incoming messages arrive"
                 enableVibration(true)
                 setSound(soundUri, audioAttributes)
             }
@@ -861,7 +1000,7 @@ class ChatService : Service() {
 
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("OnlyChat Active")
-            .setContentText("Listening for incoming messages...")
+            .setContentText("Listening for nearby devices and messages...")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .build()
@@ -871,6 +1010,37 @@ class ChatService : Service() {
         } else {
             startForeground(1, notification)
         }
+    }
+
+    private fun notifyNewDeviceFound(endpointId: String, deviceName: String) {
+        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        try {
+            val ringtone = RingtoneManager.getRingtone(applicationContext, soundUri)
+            ringtone?.play()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, "incoming_messages_channel")
+            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setContentTitle("New Device Discovered!")
+            .setContentText("Found nearby device: $deviceName")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setSound(soundUri)
+            .setVibrate(longArrayOf(0, 200, 100, 200))
+            .setContentIntent(pendingIntent)
+            .build()
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(endpointId.hashCode(), notification)
     }
 
     private fun notifyUserAndBringToFront(senderName: String, messagePreview: String, peer: PeerDevice, msgId: String) {
@@ -944,11 +1114,14 @@ class ChatService : Service() {
     private fun addOrUpdatePeer(endpointId: String, name: String, isOnlyChatActive: Boolean = true) {
         val currentList = _discoveredPeers.value.toMutableList()
         val existingIndex = currentList.indexOfFirst { it.endpointId == endpointId }
-        val peer = PeerDevice(endpointId, name, isOnlyChatActive)
+
+        val peer = PeerDevice(endpointId, name, isOnlyChatActive, signalQuality = "📶 Strong")
+
         if (existingIndex != -1) {
             currentList[existingIndex] = peer
         } else {
             currentList.add(peer)
+            notifyNewDeviceFound(endpointId, name)
         }
         _discoveredPeers.value = currentList
     }
@@ -1011,12 +1184,15 @@ class ChatService : Service() {
                         val text = json.getString("text")
 
                         val newMessage = ChatMessage(id = msgId, text = text, isFromMe = false, progress = 1f)
+
                         val currentHistory = _chatHistoryMap.value.toMutableMap()
-                        val peerMessages = (currentHistory[endpointId] ?: emptyList()) + newMessage
-                        currentHistory[endpointId] = peerMessages
+                        val peerMessages = (currentHistory[senderName] ?: emptyList()) + newMessage
+                        currentHistory[senderName] = peerMessages
                         _chatHistoryMap.value = currentHistory
 
-                        if (_activeChatPeer.value?.endpointId == endpointId) {
+                        ChatStorageHelper.saveHistory(this@ChatService, currentHistory)
+
+                        if (_activeChatPeer.value?.name == senderName) {
                             sendAck(endpointId, msgId, "ACK_READ")
                         }
 
@@ -1028,12 +1204,15 @@ class ChatService : Service() {
                         val base64Image = json.getString("image")
 
                         val newMessage = ChatMessage(id = msgId, text = "[Photo]", isFromMe = false, base64Image = base64Image, progress = 1f)
+
                         val currentHistory = _chatHistoryMap.value.toMutableMap()
-                        val peerMessages = (currentHistory[endpointId] ?: emptyList()) + newMessage
-                        currentHistory[endpointId] = peerMessages
+                        val peerMessages = (currentHistory[senderName] ?: emptyList()) + newMessage
+                        currentHistory[senderName] = peerMessages
                         _chatHistoryMap.value = currentHistory
 
-                        if (_activeChatPeer.value?.endpointId == endpointId) {
+                        ChatStorageHelper.saveHistory(this@ChatService, currentHistory)
+
+                        if (_activeChatPeer.value?.name == senderName) {
                             sendAck(endpointId, msgId, "ACK_READ")
                         }
 
@@ -1042,12 +1221,12 @@ class ChatService : Service() {
 
                     "ACK_DELIVERED" -> {
                         val msgId = json.getString("id")
-                        updateMessageStatus(endpointId, msgId, MessageStatus.DELIVERED)
+                        updateMessageStatus(senderName, msgId, MessageStatus.DELIVERED)
                     }
 
                     "ACK_READ" -> {
                         val msgId = json.getString("id")
-                        updateMessageStatus(endpointId, msgId, MessageStatus.READ)
+                        updateMessageStatus(senderName, msgId, MessageStatus.READ)
                     }
                 }
             } catch (e: Exception) {
@@ -1055,7 +1234,41 @@ class ChatService : Service() {
             }
         }
 
-        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {}
+        // Live progress update handler for ongoing transfers
+        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
+            val totalBytes = update.totalBytes
+            val payloadId = update.payloadId
+
+            if (totalBytes > 0) {
+                val calculatedProgress = update.bytesTransferred.toFloat() / totalBytes.toFloat()
+                val mappedTarget = payloadMsgMap[payloadId]
+
+                if (mappedTarget != null) {
+                    val (peerName, msgId) = mappedTarget
+                    updateMessageProgress(peerName, msgId, calculatedProgress)
+
+                    // Transfer complete or failed -> clean up mapping
+                    if (update.status == PayloadTransferUpdate.Status.SUCCESS ||
+                        update.status == PayloadTransferUpdate.Status.FAILURE ||
+                        update.status == PayloadTransferUpdate.Status.CANCELED) {
+                        payloadMsgMap.remove(payloadId)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun updateMessageProgress(peerName: String, msgId: String, progressRatio: Float) {
+        val currentHistory = _chatHistoryMap.value.toMutableMap()
+        val peerMessages = currentHistory[peerName]?.toMutableList() ?: return
+
+        val index = peerMessages.indexOfFirst { it.id == msgId }
+        if (index != -1) {
+            val existing = peerMessages[index]
+            peerMessages[index] = existing.copy(progress = progressRatio.coerceIn(0f, 1f))
+            currentHistory[peerName] = peerMessages
+            _chatHistoryMap.value = currentHistory
+        }
     }
 
     private fun sendAck(endpointId: String, msgId: String, type: String) {
@@ -1067,24 +1280,25 @@ class ChatService : Service() {
         Nearby.getConnectionsClient(this).sendPayload(endpointId, payload)
     }
 
-    private fun sendReadReceiptsForPeer(endpointId: String) {
-        val messages = _chatHistoryMap.value[endpointId] ?: return
+    private fun sendReadReceiptsForPeer(peer: PeerDevice) {
+        val messages = _chatHistoryMap.value[peer.name] ?: return
         messages.filter { !it.isFromMe }.forEach { msg ->
-            sendAck(endpointId, msg.id, "ACK_READ")
+            sendAck(peer.endpointId, msg.id, "ACK_READ")
         }
     }
 
-    private fun updateMessageStatus(endpointId: String, msgId: String, newStatus: MessageStatus) {
+    private fun updateMessageStatus(peerName: String, msgId: String, newStatus: MessageStatus) {
         val currentHistory = _chatHistoryMap.value.toMutableMap()
-        val peerMessages = currentHistory[endpointId]?.toMutableList() ?: return
+        val peerMessages = currentHistory[peerName]?.toMutableList() ?: return
 
         val index = peerMessages.indexOfFirst { it.id == msgId }
         if (index != -1) {
             val existing = peerMessages[index]
             if (newStatus.ordinal > existing.status.ordinal) {
                 peerMessages[index] = existing.copy(status = newStatus)
-                currentHistory[endpointId] = peerMessages
+                currentHistory[peerName] = peerMessages
                 _chatHistoryMap.value = currentHistory
+                ChatStorageHelper.saveHistory(this, currentHistory)
             }
         }
     }
@@ -1095,6 +1309,7 @@ class ChatService : Service() {
         client.stopDiscovery()
         client.stopAllEndpoints()
         connectingOrConnected.clear()
+        payloadMsgMap.clear()
         _discoveredPeers.value = emptyList()
         _activeChatPeer.value = null
     }
