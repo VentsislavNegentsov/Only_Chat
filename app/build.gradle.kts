@@ -5,14 +5,12 @@ plugins {
 
 android {
     namespace = "com.example.onlychat"
-    compileSdk {
-        version = release(37)
-    }
+    compileSdk = 35 // Standard Android SDK compile version
 
     defaultConfig {
         applicationId = "com.example.onlychat"
         minSdk = 24
-        targetSdk = 37
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
@@ -36,6 +34,10 @@ android {
 }
 
 dependencies {
+    // 1. Google Nearby Connections API (Multi-Radio P2P)
+    implementation("com.google.android.gms:play-services-nearby:19.3.0")
+
+    // 2. AndroidX & Jetpack Compose (using Version Catalog)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
@@ -44,6 +46,8 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+
+    // 3. Testing Dependencies
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
@@ -51,10 +55,4 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("androidx.activity:activity-compose:1.8.2")
-    implementation(platform("androidx.compose:compose-bom:2024.02.00"))
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.material3:material3")
 }
