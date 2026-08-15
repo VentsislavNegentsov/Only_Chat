@@ -872,6 +872,7 @@ class ChatService : Service() {
         private val peerFirstSeenMap = mutableMapOf<String, Long>()
         private val candidatePeersMap = mutableMapOf<String, PeerDevice>()
         private val notifiedPeersSet = mutableSetOf<String>()
+        private val pingSentMap = mutableMapOf<String, Long>()
 
         private var instance: ChatService? = null
 
@@ -1063,12 +1064,14 @@ class ChatService : Service() {
                         candidatePeersMap.remove(endpointId)
                         connectingOrConnected.remove(endpointId)
                         notifiedPeersSet.remove(endpointId)
+                        pingSentMap.remove(endpointId)
                         Nearby.getConnectionsClient(this@ChatService).disconnectFromEndpoint(endpointId)
                         continue
                     }
 
                     if (connectingOrConnected.contains(endpointId)) {
                         val pingJson = JSONObject().apply { put("type", "PING") }
+                        pingSentMap[endpointId] = System.currentTimeMillis()
                         val payload = Payload.fromBytes(pingJson.toString().toByteArray(StandardCharsets.UTF_8))
                         Nearby.getConnectionsClient(this@ChatService).sendPayload(endpointId, payload)
                     }
@@ -1076,6 +1079,14 @@ class ChatService : Service() {
 
                 updateVisiblePeersList()
             }
+        }
+    }
+
+    private fun updatePeerSignalQuality(endpointId: String, quality: String) {
+        val peer = candidatePeersMap[endpointId]
+        if (peer != null && peer.signalQuality != quality) {
+            candidatePeersMap[endpointId] = peer.copy(signalQuality = quality)
+            updateVisiblePeersList()
         }
     }
 
@@ -1264,7 +1275,8 @@ class ChatService : Service() {
         }
         peerLastSeenMap[endpointId] = now
 
-        val peer = PeerDevice(endpointId, name, isOnlyChatActive, signalQuality = "📶 Strong")
+        val existingQuality = candidatePeersMap[endpointId]?.signalQuality ?: "📶 Strong"
+        val peer = PeerDevice(endpointId, name, isOnlyChatActive, signalQuality = existingQuality)
         candidatePeersMap[endpointId] = peer
 
         updateVisiblePeersList()
@@ -1293,6 +1305,7 @@ class ChatService : Service() {
             candidatePeersMap.remove(endpointId)
             connectingOrConnected.remove(endpointId)
             notifiedPeersSet.remove(endpointId)
+            pingSentMap.remove(endpointId)
             updateVisiblePeersList()
         }
     }
@@ -1317,6 +1330,7 @@ class ChatService : Service() {
                 candidatePeersMap.remove(endpointId)
                 connectingOrConnected.remove(endpointId)
                 notifiedPeersSet.remove(endpointId)
+                pingSentMap.remove(endpointId)
                 updateVisiblePeersList()
             }
         }
@@ -1327,6 +1341,7 @@ class ChatService : Service() {
             candidatePeersMap.remove(endpointId)
             connectingOrConnected.remove(endpointId)
             notifiedPeersSet.remove(endpointId)
+            pingSentMap.remove(endpointId)
             updateVisiblePeersList()
         }
     }
@@ -1352,7 +1367,16 @@ class ChatService : Service() {
                         }
 
                         "PONG" -> {
-                            // Timestamp updated by peerLastSeenMap above
+                            val sentTime = pingSentMap.remove(endpointId)
+                            if (sentTime != null) {
+                                val rtt = System.currentTimeMillis() - sentTime
+                                val quality = when {
+                                    rtt < 70 -> "📶 Strong"
+                                    rtt < 200 -> "📶 Fair"
+                                    else -> "📶 Weak"
+                                }
+                                updatePeerSignalQuality(endpointId, quality)
+                            }
                         }
 
                         "CHAT" -> {
@@ -1516,6 +1540,7 @@ class ChatService : Service() {
         peerFirstSeenMap.clear()
         candidatePeersMap.clear()
         notifiedPeersSet.clear()
+        pingSentMap.clear()
         pingJob?.cancel()
         _discoveredPeers.value = emptyList()
         _activeChatPeer.value = null
