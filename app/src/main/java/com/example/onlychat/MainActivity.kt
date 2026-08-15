@@ -19,7 +19,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Base64
@@ -28,11 +27,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -68,7 +65,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
@@ -199,7 +195,7 @@ object ImageUtils {
             if (file.exists()) file else null
         } catch (e: Exception) {
             e.printStackTrace()
-                    null
+            null
         }
     }
 
@@ -269,7 +265,7 @@ class MainActivity : ComponentActivity() {
                     Box(modifier = Modifier.fillMaxSize()) {
                         MainScreen(
                             peers = peers,
-                            onDeviceDoubleClick = { peer -> ChatService.setActiveChatPeer(peer) },
+                            onDeviceClick = { peer -> ChatService.setActiveChatPeer(peer) },
                             onManualRefreshClick = { refreshChatService() },
                             onExitClick = { exitAndTerminateApp() }
                         )
@@ -367,7 +363,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(
     peers: List<PeerDevice>,
-    onDeviceDoubleClick: (PeerDevice) -> Unit,
+    onDeviceClick: (PeerDevice) -> Unit,
     onManualRefreshClick: () -> Unit,
     onExitClick: () -> Unit
 ) {
@@ -406,7 +402,7 @@ fun MainScreen(
         Spacer(modifier = Modifier.height(6.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🟢 Active Radar & Watchdog Active", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
+            Text("🟢 Active Radar & Ping Heartbeat Active", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -420,18 +416,17 @@ fun MainScreen(
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(peers) { peer ->
-                    DeviceCard(peer = peer, onDoubleClick = { onDeviceDoubleClick(peer) })
+                    DeviceCard(peer = peer, onClick = { onDeviceClick(peer) })
                 }
             }
         }
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DeviceCard(
     peer: PeerDevice,
-    onDoubleClick: () -> Unit
+    onClick: () -> Unit
 ) {
     val nameParts = remember(peer.name) { peer.name.split("|") }
     val mainName = nameParts.firstOrNull() ?: peer.name
@@ -442,7 +437,7 @@ fun DeviceCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = {}, onDoubleClick = onDoubleClick)
+            .clickable { onClick() }
     ) {
         Row(
             modifier = Modifier
@@ -833,7 +828,7 @@ fun Modifier.scrollbar(
 }
 
 // ============================================================================
-// SERVICE IMPLEMENTATION WITH WATCHDOG & RECOVERABILITY
+// SERVICE IMPLEMENTATION WITH WATCHDOG, RECOVERABILITY & PING HEARTBEAT
 // ============================================================================
 
 class ChatService : Service() {
@@ -854,7 +849,8 @@ class ChatService : Service() {
         val activeChatPeer: StateFlow<PeerDevice?> = _activeChatPeer
 
         private val payloadMsgMap = mutableMapOf<Long, Pair<String, String>>()
-        private val incomingPhotoMeta = mutableMapOf<Long, Pair<String, String>>() // PayloadID -> Pair(PeerName, MsgID)
+        private val incomingPhotoMeta = mutableMapOf<Long, Pair<String, String>>()
+        private val peerLastSeenMap = mutableMapOf<String, Long>()
 
         private var instance: ChatService? = null
 
@@ -955,6 +951,7 @@ class ChatService : Service() {
     private val connectingOrConnected = mutableSetOf<String>()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var watchdogJob: Job? = null
+    private var pingJob: Job? = null
 
     private val airplaneModeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -988,6 +985,7 @@ class ChatService : Service() {
                 startForegroundNotification()
                 startP2PDiscovery()
                 startRadarWatchdog()
+                startPingLoop()
             }
             ACTION_REFRESH -> restartDiscovery()
             ACTION_STOP -> {
@@ -1008,17 +1006,50 @@ class ChatService : Service() {
         watchdogJob?.cancel()
         watchdogJob = serviceScope.launch {
             while (isActive) {
-                delay(60_000) // 60-second hardware scan refresher for subway environments
+                delay(60_000)
                 val client = Nearby.getConnectionsClient(this@ChatService)
                 val myName = getDetailedDeviceName()
                 val advOptions = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
                 val discOptions = DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
 
-                // Soft refresh: stops and restarts discovery/advertising without tearing down active connected sockets
                 client.stopDiscovery()
                 client.stopAdvertising()
                 client.startAdvertising(myName, SERVICE_ID, connectionLifecycleCallback, advOptions)
                 client.startDiscovery(SERVICE_ID, endpointDiscoveryCallback, discOptions)
+            }
+        }
+    }
+
+    private fun startPingLoop() {
+        pingJob?.cancel()
+        pingJob = serviceScope.launch {
+            while (isActive) {
+                delay(5_000) // Heartbeat cycle every 5 seconds
+                val now = System.currentTimeMillis()
+                val currentList = _discoveredPeers.value.toMutableList()
+                val activeList = mutableListOf<PeerDevice>()
+
+                for (peer in currentList) {
+                    val lastSeen = peerLastSeenMap[peer.endpointId] ?: now
+
+                    // Remove device if missing/unresponsive for over 12 seconds
+                    if (now - lastSeen > 12_000) {
+                        peerLastSeenMap.remove(peer.endpointId)
+                        connectingOrConnected.remove(peer.endpointId)
+                        Nearby.getConnectionsClient(this@ChatService).disconnectFromEndpoint(peer.endpointId)
+                        continue
+                    }
+
+                    if (connectingOrConnected.contains(peer.endpointId)) {
+                        val pingJson = JSONObject().apply { put("type", "PING") }
+                        val payload = Payload.fromBytes(pingJson.toString().toByteArray(StandardCharsets.UTF_8))
+                        Nearby.getConnectionsClient(this@ChatService).sendPayload(peer.endpointId, payload)
+                    }
+
+                    activeList.add(peer)
+                }
+
+                _discoveredPeers.value = activeList
             }
         }
     }
@@ -1182,6 +1213,7 @@ class ChatService : Service() {
         val existingIndex = currentList.indexOfFirst { it.endpointId == endpointId }
 
         val peer = PeerDevice(endpointId, name, isOnlyChatActive, signalQuality = "📶 Strong")
+        peerLastSeenMap[endpointId] = System.currentTimeMillis()
 
         if (existingIndex != -1) {
             currentList[existingIndex] = peer
@@ -1210,9 +1242,9 @@ class ChatService : Service() {
         }
 
         override fun onEndpointLost(endpointId: String) {
-            if (!connectingOrConnected.contains(endpointId)) {
-                _discoveredPeers.value = _discoveredPeers.value.filter { it.endpointId != endpointId }
-            }
+            peerLastSeenMap.remove(endpointId)
+            connectingOrConnected.remove(endpointId)
+            _discoveredPeers.value = _discoveredPeers.value.filter { it.endpointId != endpointId }
         }
     }
 
@@ -1232,17 +1264,20 @@ class ChatService : Service() {
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             if (!result.status.isSuccess) {
                 connectingOrConnected.remove(endpointId)
+                peerLastSeenMap.remove(endpointId)
             }
         }
 
         override fun onDisconnected(endpointId: String) {
             connectingOrConnected.remove(endpointId)
+            peerLastSeenMap.remove(endpointId)
             _discoveredPeers.value = _discoveredPeers.value.filter { it.endpointId != endpointId }
         }
     }
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
+            peerLastSeenMap[endpointId] = System.currentTimeMillis()
             val senderName = _discoveredPeers.value.find { it.endpointId == endpointId }?.name ?: "Nearby Peer"
             val peer = PeerDevice(endpointId, senderName, isOnlyChatActive = true)
 
@@ -1254,6 +1289,16 @@ class ChatService : Service() {
                     val json = JSONObject(rawString)
 
                     when (json.optString("type")) {
+                        "PING" -> {
+                            val pongJson = JSONObject().apply { put("type", "PONG") }
+                            val pongPayload = Payload.fromBytes(pongJson.toString().toByteArray(StandardCharsets.UTF_8))
+                            Nearby.getConnectionsClient(this@ChatService).sendPayload(endpointId, pongPayload)
+                        }
+
+                        "PONG" -> {
+                            // Timestamp updated by peerLastSeenMap above
+                        }
+
                         "CHAT" -> {
                             val msgId = json.getString("id")
                             val text = json.getString("text")
@@ -1327,6 +1372,7 @@ class ChatService : Service() {
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
+            peerLastSeenMap[endpointId] = System.currentTimeMillis()
             val totalBytes = update.totalBytes
             val payloadId = update.payloadId
 
@@ -1401,7 +1447,9 @@ class ChatService : Service() {
         connectingOrConnected.clear()
         payloadMsgMap.clear()
         incomingPhotoMeta.clear()
+        peerLastSeenMap.clear()
         watchdogJob?.cancel()
+        pingJob?.cancel()
         _discoveredPeers.value = emptyList()
         _activeChatPeer.value = null
     }
