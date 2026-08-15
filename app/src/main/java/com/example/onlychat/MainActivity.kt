@@ -66,6 +66,7 @@ import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
@@ -265,8 +266,9 @@ class MainActivity : ComponentActivity() {
                     Box(modifier = Modifier.fillMaxSize()) {
                         MainScreen(
                             peers = peers,
+                            chatHistoryMap = chatHistoryMap,
                             onDeviceClick = { peer -> ChatService.setActiveChatPeer(peer) },
-                            onManualRefreshClick = { refreshChatService() },
+                            onHuntClick = { moveTaskToBack(true) },
                             onExitClick = { exitAndTerminateApp() }
                         )
 
@@ -339,11 +341,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun refreshChatService() {
-        val intent = Intent(this, ChatService::class.java).apply { action = ChatService.ACTION_REFRESH }
-        startService(intent)
-    }
-
     private fun exitAndTerminateApp() {
         stopChatService()
         finishAndRemoveTask()
@@ -363,8 +360,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(
     peers: List<PeerDevice>,
+    chatHistoryMap: Map<String, List<ChatMessage>>,
     onDeviceClick: (PeerDevice) -> Unit,
-    onManualRefreshClick: () -> Unit,
+    onHuntClick: () -> Unit,
     onExitClick: () -> Unit
 ) {
     Column(
@@ -381,11 +379,11 @@ fun MainScreen(
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
-                    onClick = onManualRefreshClick,
+                    onClick = onHuntClick,
                     shape = RoundedCornerShape(8.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
-                    Text("🔄 Refresh", fontSize = 13.sp)
+                    Text("🏹 Hunt", fontSize = 13.sp)
                 }
 
                 Button(
@@ -402,11 +400,11 @@ fun MainScreen(
         Spacer(modifier = Modifier.height(6.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🟢 Active Radar & Ping Heartbeat Active", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
+            Text("🟢 Searching for nearby devices", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
         }
 
         Spacer(modifier = Modifier.height(8.dp))
-        Divider()
+        HorizontalDivider()
         Spacer(modifier = Modifier.height(8.dp))
 
         if (peers.isEmpty()) {
@@ -416,7 +414,8 @@ fun MainScreen(
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(peers) { peer ->
-                    DeviceCard(peer = peer, onClick = { onDeviceClick(peer) })
+                    val hasHistory = chatHistoryMap[peer.name]?.isNotEmpty() == true
+                    DeviceCard(peer = peer, hasHistory = hasHistory, onClick = { onDeviceClick(peer) })
                 }
             }
         }
@@ -426,15 +425,20 @@ fun MainScreen(
 @Composable
 fun DeviceCard(
     peer: PeerDevice,
+    hasHistory: Boolean,
     onClick: () -> Unit
 ) {
     val nameParts = remember(peer.name) { peer.name.split("|") }
     val mainName = nameParts.firstOrNull() ?: peer.name
     val deviceInfo = nameParts.getOrNull(1) ?: ""
 
+    val cardBgColor = if (hasHistory) Color(0xFFE2F3E5) else MaterialTheme.colorScheme.surfaceVariant
+    val textColor = if (hasHistory) Color(0xFF1B4D2E) else MaterialTheme.colorScheme.onSurfaceVariant
+    val subTextColor = if (hasHistory) Color(0xFF2E6B40) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+
     Card(
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(containerColor = cardBgColor),
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
@@ -451,7 +455,7 @@ fun DeviceCard(
                     text = mainName,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = textColor
                 )
 
                 if (deviceInfo.isNotBlank()) {
@@ -459,7 +463,7 @@ fun DeviceCard(
                     Text(
                         text = deviceInfo,
                         fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                        color = subTextColor,
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -482,14 +486,14 @@ fun DeviceCard(
             }
 
             Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
+                color = if (hasHistory) Color(0xFFC8E6C9) else MaterialTheme.colorScheme.primaryContainer,
                 shape = RoundedCornerShape(6.dp)
             ) {
                 Text(
                     text = peer.signalQuality,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = if (hasHistory) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onPrimaryContainer,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                 )
             }
@@ -561,7 +565,7 @@ fun ChatFullScreenWindow(
                     Text("Chat: $cleanPeerName", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
 
-                Divider(modifier = Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                 LazyColumn(
                     state = listState,
@@ -1108,7 +1112,7 @@ class ChatService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
             val audioAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build()
 
@@ -1393,10 +1397,19 @@ class ChatService : Service() {
                 val meta = incomingPhotoMeta[payload.id] ?: return
                 val (peerName, msgId) = meta
 
-                val payloadFile = payload.asFile()?.asJavaFile()
                 val targetFile = File(cacheDir, "recv_${System.currentTimeMillis()}.jpg")
-
-                payloadFile?.copyTo(targetFile, overwrite = true)
+                val pfd = payload.asFile()?.asParcelFileDescriptor()
+                if (pfd != null) {
+                    try {
+                        FileInputStream(pfd.fileDescriptor).use { input ->
+                            FileOutputStream(targetFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
 
                 val newMessage = ChatMessage(
                     id = msgId,
