@@ -507,6 +507,7 @@ fun ChatFullScreenWindow(
     onSendPhotoUri: (Uri) -> Unit
 ) {
     var textInput by remember { mutableStateOf("") }
+    var showEmojiPicker by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val context = LocalContext.current
 
@@ -514,6 +515,7 @@ fun ChatFullScreenWindow(
     var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
 
     val cleanPeerName = remember(peer.name) { peer.name.split("|").firstOrNull() ?: peer.name }
+    val commonEmojis = remember { listOf("😊", "😂", "❤️", "👍", "🔥", "🎉", "🙏", "😎", "😍", "🥳") }
 
     val photoGalleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -545,7 +547,7 @@ fun ChatFullScreenWindow(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .imePadding()
+                    .navigationBarsPadding()
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 Row(
@@ -568,7 +570,7 @@ fun ChatFullScreenWindow(
                         .fillMaxWidth()
                         .scrollbar(listState, width = 4.dp, color = MaterialTheme.colorScheme.primary),
                     contentPadding = PaddingValues(vertical = 4.dp, horizontal = 2.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp, alignment = Alignment.Bottom)
                 ) {
                     items(messages) { msg ->
                         Box(
@@ -670,6 +672,34 @@ fun ChatFullScreenWindow(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
+                if (showEmojiPicker) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            commonEmojis.forEach { emoji ->
+                                Text(
+                                    text = emoji,
+                                    fontSize = 22.sp,
+                                    modifier = Modifier
+                                        .clickable { textInput += emoji }
+                                        .padding(4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -712,6 +742,13 @@ fun ChatFullScreenWindow(
                         contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
                     ) {
                         Text("👤 WhoAmI", fontSize = 11.sp)
+                    }
+
+                    IconButton(
+                        onClick = { showEmojiPicker = !showEmojiPicker },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Text("😊", fontSize = 20.sp)
                     }
                 }
 
@@ -839,7 +876,6 @@ class ChatService : Service() {
         const val ACTION_STOP = "ACTION_STOP"
         const val ACTION_REFRESH = "ACTION_REFRESH"
 
-        // Unique session identifier generated once per service start to avoid self-discovery
         private val MY_SESSION_ID = UUID.randomUUID().toString().take(6)
 
         private val _discoveredPeers = MutableStateFlow<List<PeerDevice>>(emptyList())
@@ -1031,7 +1067,7 @@ class ChatService : Service() {
         pingJob?.cancel()
         pingJob = serviceScope.launch {
             while (isActive) {
-                delay(5_000) // Heartbeat cycle every 5 seconds
+                delay(5_000)
                 val now = System.currentTimeMillis()
                 val currentList = _discoveredPeers.value.toMutableList()
                 val activeList = mutableListOf<PeerDevice>()
@@ -1039,7 +1075,6 @@ class ChatService : Service() {
                 for (peer in currentList) {
                     val lastSeen = peerLastSeenMap[peer.endpointId] ?: now
 
-                    // Remove device if missing/unresponsive for over 12 seconds
                     if (now - lastSeen > 12_000) {
                         peerLastSeenMap.remove(peer.endpointId)
                         connectingOrConnected.remove(peer.endpointId)
