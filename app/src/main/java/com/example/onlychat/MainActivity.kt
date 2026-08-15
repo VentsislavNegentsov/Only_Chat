@@ -6,8 +6,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -17,7 +19,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.provider.MediaStore
+import android.os.ParcelFileDescriptor
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Base64
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -66,6 +70,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.*
@@ -90,8 +95,9 @@ data class ChatMessage(
     val isFromMe: Boolean,
     var status: MessageStatus = MessageStatus.SENT,
     val timestamp: Long = System.currentTimeMillis(),
-    val base64Image: String? = null,
-    val progress: Float? = null
+    val imagePath: String? = null,
+    val progress: Float? = null,
+    val payloadId: Long? = null
 )
 
 // ============================================================================
@@ -113,7 +119,7 @@ class TakePictureWithFrontCamera : ActivityResultContracts.TakePicture() {
 // ============================================================================
 
 object ChatStorageHelper {
-    private const val FILE_NAME = "chat_history_v2.json"
+    private const val FILE_NAME = "chat_history_v3.json"
 
     fun saveHistory(context: Context, history: Map<String, List<ChatMessage>>) {
         try {
@@ -127,7 +133,7 @@ object ChatStorageHelper {
                         put("isFromMe", msg.isFromMe)
                         put("status", msg.status.name)
                         put("timestamp", msg.timestamp)
-                        put("base64Image", msg.base64Image ?: "")
+                        put("imagePath", msg.imagePath ?: "")
                         put("progress", msg.progress ?: 1.0)
                     }
                     array.put(obj)
@@ -160,14 +166,14 @@ object ChatStorageHelper {
 
                 for (i in 0 until array.length()) {
                     val obj = array.getJSONObject(i)
-                    val imgStr = obj.optString("base64Image", "")
+                    val imgPath = obj.optString("imagePath", "")
                     val msg = ChatMessage(
                         id = obj.optString("id", UUID.randomUUID().toString()),
                         text = obj.optString("text", ""),
                         isFromMe = obj.optBoolean("isFromMe", true),
                         status = try { MessageStatus.valueOf(obj.optString("status", "SENT")) } catch (e: Exception) { MessageStatus.SENT },
                         timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
-                        base64Image = if (imgStr.isNotEmpty()) imgStr else null,
+                        imagePath = if (imgPath.isNotEmpty()) imgPath else null,
                         progress = obj.optDouble("progress", 1.0).toFloat()
                     )
                     msgList.add(msg)
@@ -182,47 +188,24 @@ object ChatStorageHelper {
 }
 
 object ImageUtils {
-    fun compressUriToBase64(context: Context, uri: Uri): String? {
+    fun copyUriToCacheFile(context: Context, uri: Uri): File? {
         return try {
-            val inputStream = context.contentResolver.openInputStream(uri) ?: return null
-            val originalBitmap = BitmapFactory.decodeStream(inputStream)
-            inputStream.close()
-            if (originalBitmap == null) return null
-            compressBitmapToBase64(originalBitmap)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
-
-    fun compressBitmapToBase64(bitmap: Bitmap): String? {
-        return try {
-            val maxDimension = 1080
-            val width = bitmap.width
-            val height = bitmap.height
-            val scaledBitmap = if (width > maxDimension || height > maxDimension) {
-                val ratio = width.toFloat() / height.toFloat()
-                val targetWidth = if (ratio > 1) maxDimension else (maxDimension * ratio).toInt()
-                val targetHeight = if (ratio > 1) (maxDimension / ratio).toInt() else maxDimension
-                Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
-            } else {
-                bitmap
+            val file = File(context.cacheDir, "photo_${System.currentTimeMillis()}.jpg")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(file).use { output ->
+                    input.copyTo(output)
+                }
             }
-
-            val outputStream = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
-            val byteArray = outputStream.toByteArray()
-            Base64.encodeToString(byteArray, Base64.NO_WRAP)
+            if (file.exists()) file else null
         } catch (e: Exception) {
             e.printStackTrace()
-            null
+                    null
         }
     }
 
-    fun decodeBase64ToBitmap(base64Str: String): Bitmap? {
+    fun loadBitmapFromFile(filePath: String): Bitmap? {
         return try {
-            val decodedBytes = Base64.decode(base64Str, Base64.DEFAULT)
-            BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+            BitmapFactory.decodeFile(filePath)
         } catch (e: Exception) {
             e.printStackTrace()
             null
@@ -245,6 +228,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         if (permissions.values.all { it }) {
+            requestBatteryOptimizationExemption()
             startChatService()
         }
     }
@@ -311,6 +295,22 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
     }
 
     private fun checkAndRequestPermissions() {
@@ -406,7 +406,7 @@ fun MainScreen(
         Spacer(modifier = Modifier.height(6.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🟢 Auto-Refreshing active", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
+            Text("🟢 Active Radar & Watchdog Active", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -415,7 +415,7 @@ fun MainScreen(
 
         if (peers.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Scanning for nearby devices...", color = Color.Gray)
+                Text("Scanning subway & nearby area...", color = Color.Gray)
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -515,7 +515,7 @@ fun ChatFullScreenWindow(
     val listState = rememberLazyListState()
     val context = LocalContext.current
 
-    var fullScreenImageBase64 by remember { mutableStateOf<String?>(null) }
+    var fullScreenImagePath by remember { mutableStateOf<String?>(null) }
     var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
 
     val cleanPeerName = remember(peer.name) { peer.name.split("|").firstOrNull() ?: peer.name }
@@ -550,10 +550,9 @@ fun ChatFullScreenWindow(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .imePadding() // 🌟 Ensures entire lower control section stays pinned directly above the keyboard
+                    .imePadding()
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
-                // Header Bar
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -567,7 +566,6 @@ fun ChatFullScreenWindow(
 
                 Divider(modifier = Modifier.padding(vertical = 4.dp))
 
-                // 🌟 EXPANDED CHAT HISTORY AREA (Takes up all available vertical space)
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -588,15 +586,15 @@ fun ChatFullScreenWindow(
                                 modifier = Modifier.widthIn(max = 280.dp)
                             ) {
                                 Column(modifier = Modifier.padding(10.dp)) {
-                                    if (msg.base64Image != null) {
+                                    if (msg.imagePath != null) {
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .height(180.dp)
                                                 .clip(RoundedCornerShape(8.dp))
                                         ) {
-                                            val bitmap = remember(msg.base64Image) {
-                                                ImageUtils.decodeBase64ToBitmap(msg.base64Image)
+                                            val bitmap = remember(msg.imagePath) {
+                                                ImageUtils.loadBitmapFromFile(msg.imagePath)
                                             }
                                             bitmap?.let { b ->
                                                 Image(
@@ -606,7 +604,7 @@ fun ChatFullScreenWindow(
                                                         .fillMaxSize()
                                                         .clickable {
                                                             if (msg.progress == null || msg.progress >= 1f) {
-                                                                fullScreenImageBase64 = msg.base64Image
+                                                                fullScreenImagePath = msg.imagePath
                                                             }
                                                         },
                                                     contentScale = ContentScale.Crop
@@ -625,7 +623,7 @@ fun ChatFullScreenWindow(
                                                         horizontalAlignment = Alignment.CenterHorizontally
                                                     ) {
                                                         Text(
-                                                            text = "Sending Photo (${(msg.progress * 100).toInt()}%)",
+                                                            text = "Transferring Photo (${(msg.progress * 100).toInt()}%)",
                                                             color = Color.White,
                                                             fontSize = 12.sp,
                                                             fontWeight = FontWeight.Bold
@@ -646,44 +644,12 @@ fun ChatFullScreenWindow(
                                         }
                                     }
 
-                                    if (msg.text.isNotBlank() && msg.base64Image == null) {
+                                    if (msg.text.isNotBlank() && msg.imagePath == null) {
                                         Text(
                                             text = msg.text,
                                             color = if (msg.isFromMe) Color.White else Color.Black,
                                             fontSize = 15.sp
                                         )
-                                    }
-
-                                    if (msg.base64Image == null && msg.progress != null && msg.progress < 1f) {
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Column {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                            ) {
-                                                Text(
-                                                    text = "Transferring...",
-                                                    fontSize = 10.sp,
-                                                    color = if (msg.isFromMe) Color.White.copy(alpha = 0.8f) else Color.DarkGray
-                                                )
-                                                Text(
-                                                    text = "${(msg.progress * 100).toInt()}%",
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = if (msg.isFromMe) Color.White else Color.Black
-                                                )
-                                            }
-                                            Spacer(modifier = Modifier.height(2.dp))
-                                            LinearProgressIndicator(
-                                                progress = { msg.progress },
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .height(6.dp)
-                                                    .clip(RoundedCornerShape(3.dp)),
-                                                color = if (msg.isFromMe) Color.White else MaterialTheme.colorScheme.primary,
-                                                trackColor = Color.Gray.copy(alpha = 0.3f)
-                                            )
-                                        }
                                     }
 
                                     Spacer(modifier = Modifier.height(4.dp))
@@ -709,7 +675,6 @@ fun ChatFullScreenWindow(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Compact Secondary Action Buttons Row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -757,7 +722,6 @@ fun ChatFullScreenWindow(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // 🌟 BOTTOM INPUT BAR (TEXT FIELD + SEND + CLOSE DIRECTLY AT THE BOTTOM ABOVE KEYBOARD)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -797,26 +761,22 @@ fun ChatFullScreenWindow(
                 }
             }
 
-            fullScreenImageBase64?.let { base64 ->
+            fullScreenImagePath?.let { path ->
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(Color.Black.copy(alpha = 0.95f))
-                        .clickable {
-                            fullScreenImageBase64 = null
-                        },
+                        .clickable { fullScreenImagePath = null },
                     contentAlignment = Alignment.Center
                 ) {
-                    val bitmap = remember(base64) { ImageUtils.decodeBase64ToBitmap(base64) }
+                    val bitmap = remember(path) { ImageUtils.loadBitmapFromFile(path) }
                     bitmap?.let { b ->
                         Image(
                             bitmap = b.asImageBitmap(),
-                            contentDescription = "Full Screen Photo Foreground",
+                            contentDescription = "Full Screen Photo",
                             modifier = Modifier
                                 .fillMaxSize()
-                                .clickable {
-                                    fullScreenImageBase64 = null
-                                },
+                                .clickable { fullScreenImagePath = null },
                             contentScale = ContentScale.Fit
                         )
                     }
@@ -873,7 +833,7 @@ fun Modifier.scrollbar(
 }
 
 // ============================================================================
-// SERVICE IMPLEMENTATION
+// SERVICE IMPLEMENTATION WITH WATCHDOG & RECOVERABILITY
 // ============================================================================
 
 class ChatService : Service() {
@@ -894,6 +854,7 @@ class ChatService : Service() {
         val activeChatPeer: StateFlow<PeerDevice?> = _activeChatPeer
 
         private val payloadMsgMap = mutableMapOf<Long, Pair<String, String>>()
+        private val incomingPhotoMeta = mutableMapOf<Long, Pair<String, String>>() // PayloadID -> Pair(PeerName, MsgID)
 
         private var instance: ChatService? = null
 
@@ -936,49 +897,51 @@ class ChatService : Service() {
             val board = Build.BOARD
             val locale = Locale.getDefault().toString()
             val processors = Runtime.getRuntime().availableProcessors()
-            val totalMemoryMb = Runtime.getRuntime().totalMemory() / (1024 * 1024)
 
             val detailedInfo = """
                 👤 [Device Profile Info]
-                • Manufacturer & Model: $manufacturer $model
-                • Android Version: v$androidVersion (SDK $sdkVersion)
-                • Hardware / Board: $hardware / $board
-                • Locale / Language: $locale
+                • Model: $manufacturer $model
+                • OS: Android $androidVersion (SDK $sdkVersion)
+                • Board/Hardware: $hardware / $board
+                • Locale: $locale
                 • CPU Cores: $processors
-                • JVM Heap Memory: ${totalMemoryMb} MB
-                • Session Identifier: ${service.getDetailedDeviceName()}
+                • Session ID: ${service.getDetailedDeviceName()}
             """.trimIndent()
 
             sendMessage(context, endpointId, peerName, detailedInfo)
         }
 
         fun sendPhotoUri(context: Context, endpointId: String, peerName: String, uri: Uri) {
-            val base64 = ImageUtils.compressUriToBase64(context, uri) ?: return
-            instance?.sendPhotoMessage(context, endpointId, peerName, base64)
+            val file = ImageUtils.copyUriToCacheFile(context, uri) ?: return
+            instance?.sendPhotoFile(context, endpointId, peerName, file)
         }
     }
 
-    private fun sendPhotoMessage(context: Context, endpointId: String, peerName: String, base64Image: String) {
+    private fun sendPhotoFile(context: Context, endpointId: String, peerName: String, file: File) {
         val msgId = UUID.randomUUID().toString()
+        val filePayload = Payload.fromFile(file)
 
-        val json = JSONObject().apply {
-            put("type", "PHOTO")
+        val metaJson = JSONObject().apply {
+            put("type", "PHOTO_META")
             put("id", msgId)
-            put("image", base64Image)
+            put("payloadId", filePayload.id)
         }
 
-        val payload = Payload.fromBytes(json.toString().toByteArray(StandardCharsets.UTF_8))
-        payloadMsgMap[payload.id] = Pair(peerName, msgId)
+        val metaPayload = Payload.fromBytes(metaJson.toString().toByteArray(StandardCharsets.UTF_8))
+        payloadMsgMap[filePayload.id] = Pair(peerName, msgId)
 
-        Nearby.getConnectionsClient(this).sendPayload(endpointId, payload)
+        val client = Nearby.getConnectionsClient(this)
+        client.sendPayload(endpointId, metaPayload)
+        client.sendPayload(endpointId, filePayload)
 
         val newMessage = ChatMessage(
             id = msgId,
             text = "[Photo]",
             isFromMe = true,
             status = MessageStatus.SENT,
-            base64Image = base64Image,
-            progress = 0f
+            imagePath = file.absolutePath,
+            progress = 0f,
+            payloadId = filePayload.id
         )
 
         val currentHistory = _chatHistoryMap.value.toMutableMap()
@@ -991,11 +954,28 @@ class ChatService : Service() {
 
     private val connectingOrConnected = mutableSetOf<String>()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var watchdogJob: Job? = null
+
+    private val airplaneModeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_AIRPLANE_MODE_CHANGED) {
+                val isAirplaneOn = intent.getBooleanExtra("state", false)
+                if (!isAirplaneOn) {
+                    restartDiscovery()
+                } else {
+                    stopP2PDiscovery()
+                }
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         instance = this
         createNotificationChannels()
+
+        val filter = IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED)
+        registerReceiver(airplaneModeReceiver, filter)
 
         val savedHistory = ChatStorageHelper.loadHistory(this)
         _chatHistoryMap.value = savedHistory
@@ -1007,6 +987,7 @@ class ChatService : Service() {
             ACTION_START -> {
                 startForegroundNotification()
                 startP2PDiscovery()
+                startRadarWatchdog()
             }
             ACTION_REFRESH -> restartDiscovery()
             ACTION_STOP -> {
@@ -1021,6 +1002,25 @@ class ChatService : Service() {
             }
         }
         return START_NOT_STICKY
+    }
+
+    private fun startRadarWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = serviceScope.launch {
+            while (isActive) {
+                delay(60_000) // 60-second hardware scan refresher for subway environments
+                val client = Nearby.getConnectionsClient(this@ChatService)
+                val myName = getDetailedDeviceName()
+                val advOptions = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
+                val discOptions = DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
+
+                // Soft refresh: stops and restarts discovery/advertising without tearing down active connected sockets
+                client.stopDiscovery()
+                client.stopAdvertising()
+                client.startAdvertising(myName, SERVICE_ID, connectionLifecycleCallback, advOptions)
+                client.startDiscovery(SERVICE_ID, endpointDiscoveryCallback, discOptions)
+            }
+        }
     }
 
     fun getDetailedDeviceName(): String {
@@ -1128,10 +1128,7 @@ class ChatService : Service() {
         }
 
         val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val cleanSenderName = senderName.split("|").firstOrNull() ?: senderName
@@ -1246,67 +1243,86 @@ class ChatService : Service() {
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
-            val bytes = payload.asBytes() ?: return
-            val rawString = String(bytes, StandardCharsets.UTF_8)
+            val senderName = _discoveredPeers.value.find { it.endpointId == endpointId }?.name ?: "Nearby Peer"
+            val peer = PeerDevice(endpointId, senderName, isOnlyChatActive = true)
 
-            try {
-                val json = JSONObject(rawString)
-                val senderName = _discoveredPeers.value.find { it.endpointId == endpointId }?.name ?: "Nearby Peer"
-                val peer = PeerDevice(endpointId, senderName, isOnlyChatActive = true)
+            if (payload.type == Payload.Type.BYTES) {
+                val bytes = payload.asBytes() ?: return
+                val rawString = String(bytes, StandardCharsets.UTF_8)
 
-                when (json.optString("type")) {
-                    "CHAT" -> {
-                        val msgId = json.getString("id")
-                        val text = json.getString("text")
+                try {
+                    val json = JSONObject(rawString)
 
-                        val newMessage = ChatMessage(id = msgId, text = text, isFromMe = false, progress = 1f)
+                    when (json.optString("type")) {
+                        "CHAT" -> {
+                            val msgId = json.getString("id")
+                            val text = json.getString("text")
 
-                        val currentHistory = _chatHistoryMap.value.toMutableMap()
-                        val peerMessages = (currentHistory[senderName] ?: emptyList()) + newMessage
-                        currentHistory[senderName] = peerMessages
-                        _chatHistoryMap.value = currentHistory
+                            val newMessage = ChatMessage(id = msgId, text = text, isFromMe = false, progress = 1f)
 
-                        ChatStorageHelper.saveHistory(this@ChatService, currentHistory)
+                            val currentHistory = _chatHistoryMap.value.toMutableMap()
+                            val peerMessages = (currentHistory[senderName] ?: emptyList()) + newMessage
+                            currentHistory[senderName] = peerMessages
+                            _chatHistoryMap.value = currentHistory
 
-                        if (_activeChatPeer.value?.name == senderName) {
-                            sendAck(endpointId, msgId, "ACK_READ")
+                            ChatStorageHelper.saveHistory(this@ChatService, currentHistory)
+
+                            if (_activeChatPeer.value?.name == senderName) {
+                                sendAck(endpointId, msgId, "ACK_READ")
+                            }
+
+                            notifyUserAndBringToFront(senderName, text, peer, msgId)
                         }
 
-                        notifyUserAndBringToFront(senderName, text, peer, msgId)
-                    }
-
-                    "PHOTO" -> {
-                        val msgId = json.getString("id")
-                        val base64Image = json.getString("image")
-
-                        val newMessage = ChatMessage(id = msgId, text = "[Photo]", isFromMe = false, base64Image = base64Image, progress = 1f)
-
-                        val currentHistory = _chatHistoryMap.value.toMutableMap()
-                        val peerMessages = (currentHistory[senderName] ?: emptyList()) + newMessage
-                        currentHistory[senderName] = peerMessages
-                        _chatHistoryMap.value = currentHistory
-
-                        ChatStorageHelper.saveHistory(this@ChatService, currentHistory)
-
-                        if (_activeChatPeer.value?.name == senderName) {
-                            sendAck(endpointId, msgId, "ACK_READ")
+                        "PHOTO_META" -> {
+                            val msgId = json.getString("id")
+                            val filePayloadId = json.getLong("payloadId")
+                            incomingPhotoMeta[filePayloadId] = Pair(senderName, msgId)
                         }
 
-                        notifyUserAndBringToFront(senderName, "📷 Sent you a photo", peer, msgId)
-                    }
+                        "ACK_DELIVERED" -> {
+                            val msgId = json.getString("id")
+                            updateMessageStatus(senderName, msgId, MessageStatus.DELIVERED)
+                        }
 
-                    "ACK_DELIVERED" -> {
-                        val msgId = json.getString("id")
-                        updateMessageStatus(senderName, msgId, MessageStatus.DELIVERED)
+                        "ACK_READ" -> {
+                            val msgId = json.getString("id")
+                            updateMessageStatus(senderName, msgId, MessageStatus.READ)
+                        }
                     }
-
-                    "ACK_READ" -> {
-                        val msgId = json.getString("id")
-                        updateMessageStatus(senderName, msgId, MessageStatus.READ)
-                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } else if (payload.type == Payload.Type.FILE) {
+                val meta = incomingPhotoMeta[payload.id] ?: return
+                val (peerName, msgId) = meta
+
+                val payloadFile = payload.asFile()?.asJavaFile()
+                val targetFile = File(cacheDir, "recv_${System.currentTimeMillis()}.jpg")
+
+                payloadFile?.copyTo(targetFile, overwrite = true)
+
+                val newMessage = ChatMessage(
+                    id = msgId,
+                    text = "[Photo]",
+                    isFromMe = false,
+                    imagePath = targetFile.absolutePath,
+                    progress = 1f
+                )
+
+                val currentHistory = _chatHistoryMap.value.toMutableMap()
+                val peerMessages = (currentHistory[peerName] ?: emptyList()) + newMessage
+                currentHistory[peerName] = peerMessages
+                _chatHistoryMap.value = currentHistory
+
+                ChatStorageHelper.saveHistory(this@ChatService, currentHistory)
+                incomingPhotoMeta.remove(payload.id)
+
+                if (_activeChatPeer.value?.name == peerName) {
+                    sendAck(endpointId, msgId, "ACK_READ")
+                }
+
+                notifyUserAndBringToFront(peerName, "📷 Sent you a photo", peer, msgId)
             }
         }
 
@@ -1384,6 +1400,8 @@ class ChatService : Service() {
         client.stopAllEndpoints()
         connectingOrConnected.clear()
         payloadMsgMap.clear()
+        incomingPhotoMeta.clear()
+        watchdogJob?.cancel()
         _discoveredPeers.value = emptyList()
         _activeChatPeer.value = null
     }
@@ -1391,6 +1409,11 @@ class ChatService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        try {
+            unregisterReceiver(airplaneModeReceiver)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         stopP2PDiscovery()
         serviceScope.cancel()
         instance = null
