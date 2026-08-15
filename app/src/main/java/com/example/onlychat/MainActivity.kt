@@ -839,6 +839,9 @@ class ChatService : Service() {
         const val ACTION_STOP = "ACTION_STOP"
         const val ACTION_REFRESH = "ACTION_REFRESH"
 
+        // Unique session identifier generated once per service start to avoid self-discovery
+        private val MY_SESSION_ID = UUID.randomUUID().toString().take(6)
+
         private val _discoveredPeers = MutableStateFlow<List<PeerDevice>>(emptyList())
         val discoveredPeers: StateFlow<List<PeerDevice>> = _discoveredPeers
 
@@ -853,6 +856,10 @@ class ChatService : Service() {
         private val peerLastSeenMap = mutableMapOf<String, Long>()
 
         private var instance: ChatService? = null
+
+        fun isSelf(endpointName: String): Boolean {
+            return endpointName.contains("#$MY_SESSION_ID")
+        }
 
         fun setActiveChatPeer(peer: PeerDevice?) {
             _activeChatPeer.value = peer
@@ -1059,7 +1066,7 @@ class ChatService : Service() {
         val model = Build.MODEL
         val hardware = Build.HARDWARE
         val board = Build.BOARD
-        return "$manufacturer $model|$hardware • $board"
+        return "$manufacturer $model|$hardware • $board|#$MY_SESSION_ID"
     }
 
     private fun createNotificationChannels() {
@@ -1209,13 +1216,22 @@ class ChatService : Service() {
     }
 
     private fun addOrUpdatePeer(endpointId: String, name: String, isOnlyChatActive: Boolean = true) {
+        if (isSelf(name)) return
+
         val currentList = _discoveredPeers.value.toMutableList()
-        val existingIndex = currentList.indexOfFirst { it.endpointId == endpointId }
+        val existingIndex = currentList.indexOfFirst { peer ->
+            peer.endpointId == endpointId || peer.name == name
+        }
 
         val peer = PeerDevice(endpointId, name, isOnlyChatActive, signalQuality = "📶 Strong")
         peerLastSeenMap[endpointId] = System.currentTimeMillis()
 
         if (existingIndex != -1) {
+            val oldPeer = currentList[existingIndex]
+            if (oldPeer.endpointId != endpointId) {
+                peerLastSeenMap.remove(oldPeer.endpointId)
+                connectingOrConnected.remove(oldPeer.endpointId)
+            }
             currentList[existingIndex] = peer
         } else {
             currentList.add(peer)
@@ -1228,7 +1244,7 @@ class ChatService : Service() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val myName = getDetailedDeviceName()
 
-            if (info.endpointName == myName) return
+            if (isSelf(info.endpointName) || info.endpointName == myName) return
 
             val isOnlyChat = info.serviceId == SERVICE_ID
             addOrUpdatePeer(endpointId, info.endpointName, isOnlyChatActive = isOnlyChat)
@@ -1252,7 +1268,7 @@ class ChatService : Service() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             val myName = getDetailedDeviceName()
 
-            if (info.endpointName == myName) return
+            if (isSelf(info.endpointName) || info.endpointName == myName) return
 
             connectingOrConnected.add(endpointId)
             addOrUpdatePeer(endpointId, info.endpointName, isOnlyChatActive = true)
