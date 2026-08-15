@@ -383,7 +383,7 @@ fun MainScreen(
 
         if (peers.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Scanning subway & nearby area...", color = Color.Gray)
+                Text("Searching for nearby devices", color = Color.Gray)
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -880,11 +880,11 @@ class ChatService : Service() {
 
             val manufacturer = Build.MANUFACTURER.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
             val model = Build.MODEL
-            val hardware = Build.HARDWARE
-            val board = Build.BOARD
-            val myDeviceSignature = "$manufacturer $model|$hardware • $board|"
+            val myDeviceSignature = "$manufacturer $model"
 
-            if (endpointName.startsWith(myDeviceSignature)) return true
+            if (endpointName.startsWith(myDeviceSignature) && endpointName.contains(MY_SESSION_ID)) {
+                return true
+            }
 
             return false
         }
@@ -985,7 +985,6 @@ class ChatService : Service() {
 
     private val connectingOrConnected = mutableSetOf<String>()
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var watchdogJob: Job? = null
     private var pingJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -1030,7 +1029,6 @@ class ChatService : Service() {
             ACTION_START -> {
                 startForegroundNotification()
                 startP2PDiscovery()
-                startRadarWatchdog()
                 startPingLoop()
             }
             ACTION_REFRESH -> restartDiscovery()
@@ -1046,24 +1044,6 @@ class ChatService : Service() {
             }
         }
         return START_NOT_STICKY
-    }
-
-    private fun startRadarWatchdog() {
-        watchdogJob?.cancel()
-        watchdogJob = serviceScope.launch {
-            while (isActive) {
-                delay(60_000)
-                val client = Nearby.getConnectionsClient(this@ChatService)
-                val myName = getDetailedDeviceName()
-                val advOptions = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
-                val discOptions = DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
-
-                client.stopDiscovery()
-                client.stopAdvertising()
-                client.startAdvertising(myName, SERVICE_ID, connectionLifecycleCallback, advOptions)
-                client.startDiscovery(SERVICE_ID, endpointDiscoveryCallback, discOptions)
-            }
-        }
     }
 
     private fun startPingLoop() {
@@ -1536,7 +1516,6 @@ class ChatService : Service() {
         peerFirstSeenMap.clear()
         candidatePeersMap.clear()
         notifiedPeersSet.clear()
-        watchdogJob?.cancel()
         pingJob?.cancel()
         _discoveredPeers.value = emptyList()
         _activeChatPeer.value = null
