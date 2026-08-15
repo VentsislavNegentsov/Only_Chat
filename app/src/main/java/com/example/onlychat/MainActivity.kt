@@ -1,7 +1,6 @@
 package com.example.onlychat
 
 import android.Manifest
-import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -71,7 +70,6 @@ import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.system.exitProcess
 
 // ============================================================================
 // DATA MODELS & ENUMS
@@ -268,8 +266,7 @@ class MainActivity : ComponentActivity() {
                             peers = peers,
                             chatHistoryMap = chatHistoryMap,
                             onDeviceClick = { peer -> ChatService.setActiveChatPeer(peer) },
-                            onHuntClick = { moveTaskToBack(true) },
-                            onExitClick = { exitAndTerminateApp() }
+                            onHuntClick = { moveTaskToBack(true) }
                         )
 
                         activeChatPeer?.let { peer ->
@@ -340,17 +337,6 @@ class MainActivity : ComponentActivity() {
             startService(intent)
         }
     }
-
-    private fun exitAndTerminateApp() {
-        stopChatService()
-        finishAndRemoveTask()
-        exitProcess(0)
-    }
-
-    private fun stopChatService() {
-        val intent = Intent(this, ChatService::class.java).apply { action = ChatService.ACTION_STOP }
-        startService(intent)
-    }
 }
 
 // ============================================================================
@@ -362,8 +348,7 @@ fun MainScreen(
     peers: List<PeerDevice>,
     chatHistoryMap: Map<String, List<ChatMessage>>,
     onDeviceClick: (PeerDevice) -> Unit,
-    onHuntClick: () -> Unit,
-    onExitClick: () -> Unit
+    onHuntClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -377,23 +362,12 @@ fun MainScreen(
         ) {
             Text("OnlyChat", fontSize = 24.sp, fontWeight = FontWeight.Bold)
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    onClick = onHuntClick,
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text("🏹 Hunt", fontSize = 13.sp)
-                }
-
-                Button(
-                    onClick = onExitClick,
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text("❌ Exit", fontSize = 13.sp, color = Color.White)
-                }
+            OutlinedButton(
+                onClick = onHuntClick,
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text("🏹 Hunt", fontSize = 13.sp)
             }
         }
 
@@ -893,12 +867,26 @@ class ChatService : Service() {
 
         private val payloadMsgMap = mutableMapOf<Long, Pair<String, String>>()
         private val incomingPhotoMeta = mutableMapOf<Long, Pair<String, String>>()
+
         private val peerLastSeenMap = mutableMapOf<String, Long>()
+        private val peerFirstSeenMap = mutableMapOf<String, Long>()
+        private val candidatePeersMap = mutableMapOf<String, PeerDevice>()
+        private val notifiedPeersSet = mutableSetOf<String>()
 
         private var instance: ChatService? = null
 
         fun isSelf(endpointName: String): Boolean {
-            return endpointName.contains("#$MY_SESSION_ID")
+            if (endpointName.contains("#$MY_SESSION_ID")) return true
+
+            val manufacturer = Build.MANUFACTURER.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
+            val model = Build.MODEL
+            val hardware = Build.HARDWARE
+            val board = Build.BOARD
+            val myDeviceSignature = "$manufacturer $model|$hardware • $board|"
+
+            if (endpointName.startsWith(myDeviceSignature)) return true
+
+            return false
         }
 
         fun setActiveChatPeer(peer: PeerDevice?) {
@@ -1082,33 +1070,52 @@ class ChatService : Service() {
         pingJob?.cancel()
         pingJob = serviceScope.launch {
             while (isActive) {
-                delay(5_000)
+                delay(2_000)
                 val now = System.currentTimeMillis()
-                val currentList = _discoveredPeers.value.toMutableList()
-                val activeList = mutableListOf<PeerDevice>()
+                val candidates = candidatePeersMap.keys.toList()
 
-                for (peer in currentList) {
-                    val lastSeen = peerLastSeenMap[peer.endpointId] ?: now
+                for (endpointId in candidates) {
+                    val lastSeen = peerLastSeenMap[endpointId] ?: now
 
                     if (now - lastSeen > 12_000) {
-                        peerLastSeenMap.remove(peer.endpointId)
-                        connectingOrConnected.remove(peer.endpointId)
-                        Nearby.getConnectionsClient(this@ChatService).disconnectFromEndpoint(peer.endpointId)
+                        peerFirstSeenMap.remove(endpointId)
+                        peerLastSeenMap.remove(endpointId)
+                        candidatePeersMap.remove(endpointId)
+                        connectingOrConnected.remove(endpointId)
+                        notifiedPeersSet.remove(endpointId)
+                        Nearby.getConnectionsClient(this@ChatService).disconnectFromEndpoint(endpointId)
                         continue
                     }
 
-                    if (connectingOrConnected.contains(peer.endpointId)) {
+                    if (connectingOrConnected.contains(endpointId)) {
                         val pingJson = JSONObject().apply { put("type", "PING") }
                         val payload = Payload.fromBytes(pingJson.toString().toByteArray(StandardCharsets.UTF_8))
-                        Nearby.getConnectionsClient(this@ChatService).sendPayload(peer.endpointId, payload)
+                        Nearby.getConnectionsClient(this@ChatService).sendPayload(endpointId, payload)
                     }
-
-                    activeList.add(peer)
                 }
 
-                _discoveredPeers.value = activeList
+                updateVisiblePeersList()
             }
         }
+    }
+
+    private fun updateVisiblePeersList() {
+        val now = System.currentTimeMillis()
+
+        val stablePeers = candidatePeersMap.values.filter { peer ->
+            val firstSeen = peerFirstSeenMap[peer.endpointId] ?: now
+            val lastSeen = peerLastSeenMap[peer.endpointId] ?: 0L
+            (now - firstSeen >= 10_000) && (now - lastSeen <= 12_000)
+        }
+
+        for (peer in stablePeers) {
+            if (!notifiedPeersSet.contains(peer.endpointId)) {
+                notifiedPeersSet.add(peer.endpointId)
+                notifyNewDeviceFound(peer.endpointId, peer.name)
+            }
+        }
+
+        _discoveredPeers.value = stablePeers
     }
 
     fun getDetailedDeviceName(): String {
@@ -1271,26 +1278,16 @@ class ChatService : Service() {
     private fun addOrUpdatePeer(endpointId: String, name: String, isOnlyChatActive: Boolean = true) {
         if (isSelf(name)) return
 
-        val currentList = _discoveredPeers.value.toMutableList()
-        val existingIndex = currentList.indexOfFirst { peer ->
-            peer.endpointId == endpointId || peer.name == name
+        val now = System.currentTimeMillis()
+        if (!peerFirstSeenMap.containsKey(endpointId)) {
+            peerFirstSeenMap[endpointId] = now
         }
+        peerLastSeenMap[endpointId] = now
 
         val peer = PeerDevice(endpointId, name, isOnlyChatActive, signalQuality = "📶 Strong")
-        peerLastSeenMap[endpointId] = System.currentTimeMillis()
+        candidatePeersMap[endpointId] = peer
 
-        if (existingIndex != -1) {
-            val oldPeer = currentList[existingIndex]
-            if (oldPeer.endpointId != endpointId) {
-                peerLastSeenMap.remove(oldPeer.endpointId)
-                connectingOrConnected.remove(oldPeer.endpointId)
-            }
-            currentList[existingIndex] = peer
-        } else {
-            currentList.add(peer)
-            notifyNewDeviceFound(endpointId, name)
-        }
-        _discoveredPeers.value = currentList
+        updateVisiblePeersList()
     }
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
@@ -1311,9 +1308,12 @@ class ChatService : Service() {
         }
 
         override fun onEndpointLost(endpointId: String) {
+            peerFirstSeenMap.remove(endpointId)
             peerLastSeenMap.remove(endpointId)
+            candidatePeersMap.remove(endpointId)
             connectingOrConnected.remove(endpointId)
-            _discoveredPeers.value = _discoveredPeers.value.filter { it.endpointId != endpointId }
+            notifiedPeersSet.remove(endpointId)
+            updateVisiblePeersList()
         }
     }
 
@@ -1332,22 +1332,29 @@ class ChatService : Service() {
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             if (!result.status.isSuccess) {
-                connectingOrConnected.remove(endpointId)
+                peerFirstSeenMap.remove(endpointId)
                 peerLastSeenMap.remove(endpointId)
+                candidatePeersMap.remove(endpointId)
+                connectingOrConnected.remove(endpointId)
+                notifiedPeersSet.remove(endpointId)
+                updateVisiblePeersList()
             }
         }
 
         override fun onDisconnected(endpointId: String) {
-            connectingOrConnected.remove(endpointId)
+            peerFirstSeenMap.remove(endpointId)
             peerLastSeenMap.remove(endpointId)
-            _discoveredPeers.value = _discoveredPeers.value.filter { it.endpointId != endpointId }
+            candidatePeersMap.remove(endpointId)
+            connectingOrConnected.remove(endpointId)
+            notifiedPeersSet.remove(endpointId)
+            updateVisiblePeersList()
         }
     }
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             peerLastSeenMap[endpointId] = System.currentTimeMillis()
-            val senderName = _discoveredPeers.value.find { it.endpointId == endpointId }?.name ?: "Nearby Peer"
+            val senderName = candidatePeersMap[endpointId]?.name ?: "Nearby Peer"
             val peer = PeerDevice(endpointId, senderName, isOnlyChatActive = true)
 
             if (payload.type == Payload.Type.BYTES) {
@@ -1526,6 +1533,9 @@ class ChatService : Service() {
         payloadMsgMap.clear()
         incomingPhotoMeta.clear()
         peerLastSeenMap.clear()
+        peerFirstSeenMap.clear()
+        candidatePeersMap.clear()
+        notifiedPeersSet.clear()
         watchdogJob?.cancel()
         pingJob?.cancel()
         _discoveredPeers.value = emptyList()
