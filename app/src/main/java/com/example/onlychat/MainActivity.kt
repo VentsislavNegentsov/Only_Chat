@@ -999,6 +999,7 @@ class ChatService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var watchdogJob: Job? = null
     private var pingJob: Job? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private val airplaneModeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -1016,6 +1017,16 @@ class ChatService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "OnlyChat::P2PWakeLock"
+        ).apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+
         createNotificationChannels()
 
         val filter = IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED)
@@ -1124,6 +1135,7 @@ class ChatService : Service() {
                 description = "Notifies when nearby devices are discovered or incoming messages arrive"
                 enableVibration(true)
                 setSound(soundUri, audioAttributes)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
             }
 
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -1177,6 +1189,7 @@ class ChatService : Service() {
             .setContentTitle("New Device Discovered!")
             .setContentText("Found nearby device: $cleanName")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .setSound(soundUri)
             .setVibrate(longArrayOf(0, 200, 100, 200))
@@ -1216,6 +1229,7 @@ class ChatService : Service() {
             .setContentText(messagePreview)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .setSound(soundUri)
             .setVibrate(longArrayOf(0, 250, 100, 250))
@@ -1521,6 +1535,11 @@ class ChatService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wakeLock = null
+
         try {
             unregisterReceiver(airplaneModeReceiver)
         } catch (e: Exception) {
