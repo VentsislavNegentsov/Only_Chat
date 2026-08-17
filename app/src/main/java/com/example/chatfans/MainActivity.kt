@@ -58,6 +58,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.*
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
@@ -242,11 +244,46 @@ object ImageUtils {
     fun copyUriToCacheFile(context: Context, uri: Uri): File? {
         return try {
             val file = File(context.cacheDir, "photo_${System.currentTimeMillis()}.jpg")
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(file).use { output ->
-                    input.copyTo(output)
+            
+            // Target: 480p (854 pixels on the long side)
+            val targetMaxDim = 854
+            
+            // 1. Read dimensions
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+            
+            // 2. Efficiently downsample while decoding to save RAM
+            var inSampleSize = 1
+            if (options.outHeight > targetMaxDim || options.outWidth > targetMaxDim) {
+                val halfHeight = options.outHeight / 2
+                val halfWidth = options.outWidth / 2
+                while (halfHeight / inSampleSize >= targetMaxDim && halfWidth / inSampleSize >= targetMaxDim) {
+                    inSampleSize *= 2
                 }
             }
+            
+            // 3. Decode to bitmap
+            val decodeOptions = BitmapFactory.Options().apply { this.inSampleSize = inSampleSize }
+            val sourceBitmap = context.contentResolver.openInputStream(uri)?.use { 
+                BitmapFactory.decodeStream(it, null, decodeOptions) 
+            } ?: return null
+            
+            // 4. Calculate final dimensions keeping aspect ratio
+            val scale = targetMaxDim.toFloat() / Math.max(sourceBitmap.width, sourceBitmap.height)
+            val finalWidth = (sourceBitmap.width * scale).toInt()
+            val finalHeight = (sourceBitmap.height * scale).toInt()
+            
+            val resizedBitmap = Bitmap.createScaledBitmap(sourceBitmap, finalWidth, finalHeight, true)
+            
+            // 5. Compress to JPEG (80% quality) and save
+            FileOutputStream(file).use { out ->
+                resizedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
+            }
+            
+            // Cleanup memory
+            sourceBitmap.recycle()
+            if (resizedBitmap != sourceBitmap) resizedBitmap.recycle()
+            
             if (file.exists()) file else null
         } catch (e: Exception) {
             e.printStackTrace()
@@ -579,6 +616,62 @@ fun ChatFansLogo(modifier: Modifier = Modifier) {
 }
 
 @Composable
+fun ScanningIndicator(modifier: Modifier = Modifier) {
+    val infiniteTransition = rememberInfiniteTransition(label = "scanning")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "alpha"
+    )
+    val scale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "scale"
+    )
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(32.dp)) {
+            // Pulse circle
+            Surface(
+                modifier = Modifier
+                    .size(14.dp)
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        alpha = (1f - (scale - 1f)).coerceIn(0f, 1f)
+                    ),
+                shape = CircleShape,
+                color = Color(0xFF2E7D32).copy(alpha = 0.4f)
+            ) {}
+            // Static inner dot
+            Surface(
+                modifier = Modifier.size(10.dp),
+                shape = CircleShape,
+                color = Color(0xFF2E7D32)
+            ) {}
+        }
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = "Searching for nearby fans...",
+            fontSize = 14.sp,
+            color = Color(0xFF2E7D32).copy(alpha = alpha),
+            fontWeight = FontWeight.ExtraBold
+        )
+    }
+}
+
+@Composable
 fun MainScreen(
     peers: List<PeerDevice>,
     chatHistoryMap: Map<String, List<ChatMessage>>,
@@ -589,10 +682,12 @@ fun MainScreen(
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
+    var showImportantDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .statusBarsPadding() // Move content down for camera cutout
             .padding(16.dp)
     ) {
         Row(
@@ -634,43 +729,53 @@ fun MainScreen(
                                 showAboutDialog = true
                             }
                         )
+                        DropdownMenuItem(
+                            text = { Text("Important") },
+                            onClick = {
+                                showMenu = false
+                                showImportantDialog = true
+                            }
+                        )
                     }
                 }
             }
         }
 
+        Text(
+            text = "by Ventsislav Negentsov",
+            fontSize = 12.sp, // Slightly bigger
+            color = Color.Gray,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(start = 2.dp) // Leftmost
+        )
+
         Spacer(modifier = Modifier.height(20.dp))
 
         Column(
             modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.End
+            horizontalAlignment = Alignment.Start
         ) {
-            Text(
-                text = "🟢 Searching for nearby fans",
-                fontSize = 14.sp,
-                color = Color(0xFF2E7D32),
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            OutlinedButton(
+            Button(
                 onClick = onHuntClick,
-                modifier = Modifier.fillMaxWidth(0.8f),
-                shape = RoundedCornerShape(24.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, ChatFansBlue),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = ChatFansBlue),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+                shape = RoundedCornerShape(28.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ChatFansBlue,
+                    contentColor = Color.White
+                ),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp),
+                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
             ) {
                 Text(
-                    text = "🟢 Run in Background",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Black,
-                    modifier = Modifier.fillMaxWidth(),
+                    text = "Run in Background",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.ExtraBold,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            ScanningIndicator(modifier = Modifier.fillMaxWidth())
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -694,6 +799,41 @@ fun MainScreen(
     if (showAboutDialog) {
         AboutDialog(onDismiss = { showAboutDialog = false })
     }
+    if (showImportantDialog) {
+        ImportantDialog(onDismiss = { showImportantDialog = false })
+    }
+}
+
+@Composable
+fun ImportantDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Understood", color = ChatFansBlue)
+            }
+        },
+        title = {
+            Text("Important: Battery Settings", fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column {
+                Text(
+                    text = "Important about battery restriction settings",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = Color.Black
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Android phones are designed to aggressively save power by putting background apps to sleep. Because OnlyChat relies on continuous, real-time local discovery to find people nearby while your phone is in your pocket (using Hide & Wait), battery restrictions will cause the radar to stop scanning.\n\n" +
+                           "By removing battery restrictions, you ensure that your connection service stays fully active and listening in the background—so you never miss a match while out in public. Your privacy remains completely protected, and power is used solely to keep your local radar running.",
+                    fontSize = 14.sp
+                )
+            }
+        },
+        shape = RoundedCornerShape(24.dp)
+    )
 }
 
 @Composable
@@ -720,6 +860,14 @@ fun AboutDialog(onDismiss: () -> Unit) {
                     .heightIn(max = 400.dp)
                     .verticalScroll(scrollState)
             ) {
+                Text(
+                    text = "by Ventsislav Negentsov",
+                    fontSize = 11.sp,
+                    color = ChatFansBlue,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                
                 Text(
                     text = "Welcome to ChatFans—your modern, off-grid radar for real-world connection, inspired by the classic Japanese proximity-dating phenomenon (Lovegety). Whether you are navigating a bustling mall, riding the subway, or hanging out at a bar, this app helps you discover, flirt, and connect with people in your immediate perimeter without relying on cellular data or an internet connection.",
                     fontSize = 14.sp
@@ -822,18 +970,60 @@ fun DeviceCard(
                 }
             }
 
-            Surface(
-                color = ChatFansBlue.copy(alpha = 0.15f),
-                shape = RoundedCornerShape(24.dp)
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.Center
             ) {
-                Text(
-                    text = peer.signalQuality,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Black,
-                    color = ChatFansBlue,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                )
+                if (!hasHistory) {
+                    Surface(
+                        color = Color.Red,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    ) {
+                        Text(
+                            text = "NEW",
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Black,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+                SignalIndicator(quality = peer.signalQuality)
             }
+        }
+    }
+}
+
+@Composable
+fun SignalIndicator(quality: String) {
+    val level = when (quality) {
+        "LEVEL_5" -> 5
+        "LEVEL_4" -> 4
+        "LEVEL_3" -> 3
+        "LEVEL_2" -> 2
+        "LEVEL_1" -> 1
+        "📶 Strong" -> 5 // Fallback for legacy
+        "📶 Fair" -> 3   // Fallback for legacy
+        "📶 Weak" -> 1   // Fallback for legacy
+        else -> 0
+    }
+
+    Row(
+        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        for (i in 1..5) {
+            val barHeight = (i * 3).dp
+            val color = if (i <= level) ChatFansBlue else Color.LightGray.copy(alpha = 0.3f)
+            Surface(
+                modifier = Modifier
+                    .width(4.dp)
+                    .height(barHeight),
+                shape = RoundedCornerShape(1.dp),
+                color = color
+            ) {}
         }
     }
 }
@@ -1755,9 +1945,11 @@ class ChatService : Service() {
                             if (sentTime != null) {
                                 val rtt = System.currentTimeMillis() - sentTime
                                 val quality = when {
-                                    rtt < 70 -> "📶 Strong"
-                                    rtt < 200 -> "📶 Fair"
-                                    else -> "📶 Weak"
+                                    rtt < 50 -> "LEVEL_5"
+                                    rtt < 100 -> "LEVEL_4"
+                                    rtt < 200 -> "LEVEL_3"
+                                    rtt < 400 -> "LEVEL_2"
+                                    else -> "LEVEL_1"
                                 }
                                 updatePeerSignalQuality(endpointId, quality)
                             }
