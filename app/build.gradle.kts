@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.onlychat"
+    namespace = "com.example.chatfans"
     compileSdk = 35 // Standard Android SDK compile version
 
     defaultConfig {
-        applicationId = "com.example.onlychat"
+        applicationId = "com.example.chatfans"
         minSdk = 24
         targetSdk = 35
         versionCode = 1

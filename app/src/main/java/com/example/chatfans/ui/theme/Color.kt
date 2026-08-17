@@ -1,6 +1,10 @@
-package com.example.onlychat.ui.theme
+package com.example.chatfans.ui.theme
 
 import androidx.compose.ui.graphics.Color
+
+val ChatFansBlue = Color(0xFF00AFF0)
+val ChatFansDarkBlue = Color(0xFF008EC2)
+val ChatFansLightBlue = Color(0xFFE6F7FF)
 
 val Purple80 = Color(0xFFD0BCFF)
 val PurpleGrey80 = Color(0xFFCCC2DC)

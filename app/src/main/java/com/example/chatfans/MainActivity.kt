@@ -1,4 +1,4 @@
-package com.example.onlychat
+package com.example.chatfans
 
 import android.Manifest
 import android.app.NotificationChannel
@@ -26,6 +26,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,6 +35,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -45,9 +47,12 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -57,6 +62,8 @@ import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.example.chatfans.ui.theme.ChatFansTheme
+import com.example.chatfans.ui.theme.ChatFansBlue
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.*
 import kotlinx.coroutines.*
@@ -80,7 +87,7 @@ enum class MessageStatus { SENT, DELIVERED, READ }
 data class PeerDevice(
     val endpointId: String,
     val name: String,
-    val isOnlyChatActive: Boolean = true,
+    val isChatFansActive: Boolean = true,
     val signalQuality: String = "📶 Strong"
 )
 
@@ -251,7 +258,7 @@ class MainActivity : ComponentActivity() {
         checkAndRequestPermissions()
 
         setContent {
-            MaterialTheme {
+            ChatFansTheme {
                 val peers by ChatService.discoveredPeers.collectAsState()
                 val chatHistoryMap by ChatService.chatHistoryMap.collectAsState()
                 val activeChatPeer by ChatService.activeChatPeer.collectAsState()
@@ -344,6 +351,49 @@ class MainActivity : ComponentActivity() {
 // ============================================================================
 
 @Composable
+fun ChatFansLogo(modifier: Modifier = Modifier) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val canvasWidth = size.width
+            val canvasHeight = size.height
+            
+            // Draw circle background
+            drawCircle(
+                color = ChatFansBlue,
+                radius = canvasWidth / 2f
+            )
+            
+            // Draw stylized 'of' inspired shape (simplified)
+            val path = Path().apply {
+                moveTo(canvasWidth * 0.3f, canvasHeight * 0.5f)
+                quadraticBezierTo(
+                    canvasWidth * 0.4f, canvasHeight * 0.2f,
+                    canvasWidth * 0.7f, canvasHeight * 0.3f
+                )
+                lineTo(canvasWidth * 0.8f, canvasHeight * 0.45f)
+                quadraticBezierTo(
+                    canvasWidth * 0.6f, canvasHeight * 0.5f,
+                    canvasWidth * 0.5f, canvasHeight * 0.8f
+                )
+                close()
+            }
+            
+            drawPath(
+                path = path,
+                color = Color.White,
+                style = Fill
+            )
+            
+            drawCircle(
+                color = Color.White,
+                radius = canvasWidth * 0.15f,
+                center = Offset(canvasWidth * 0.35f, canvasHeight * 0.65f)
+            )
+        }
+    }
+}
+
+@Composable
 fun MainScreen(
     peers: List<PeerDevice>,
     chatHistoryMap: Map<String, List<ChatMessage>>,
@@ -360,33 +410,45 @@ fun MainScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("OnlyChat", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ChatFansLogo(modifier = Modifier.size(42.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "ChatFans",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.SansSerif,
+                    color = Color.Black
+                )
+            }
 
             OutlinedButton(
                 onClick = onHuntClick,
-                shape = RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                shape = RoundedCornerShape(24.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, ChatFansBlue),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = ChatFansBlue),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp)
             ) {
-                Text("🏹 Hunt", fontSize = 13.sp)
+                Text("🏹 Hunt", fontSize = 14.sp, fontWeight = FontWeight.Black)
             }
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🟢 Searching for nearby devices", fontSize = 12.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
+            Text("🟢 Searching for nearby fans", fontSize = 14.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold)
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
-        HorizontalDivider()
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
+        HorizontalDivider(thickness = 0.5.dp, color = Color.LightGray)
+        Spacer(modifier = Modifier.height(12.dp))
 
         if (peers.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Searching for nearby devices", color = Color.Gray)
+                Text("Waiting for nearby fans to appear...", color = Color.Gray, fontSize = 16.sp)
             }
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(peers) { peer ->
                     val hasHistory = chatHistoryMap[peer.name]?.isNotEmpty() == true
                     DeviceCard(peer = peer, hasHistory = hasHistory, onClick = { onDeviceClick(peer) })
@@ -406,20 +468,20 @@ fun DeviceCard(
     val mainName = nameParts.firstOrNull() ?: peer.name
     val deviceInfo = nameParts.getOrNull(1) ?: ""
 
-    val cardBgColor = if (hasHistory) Color(0xFFE2F3E5) else MaterialTheme.colorScheme.surfaceVariant
-    val textColor = if (hasHistory) Color(0xFF1B4D2E) else MaterialTheme.colorScheme.onSurfaceVariant
-    val subTextColor = if (hasHistory) Color(0xFF2E6B40) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+    val cardBgColor = if (hasHistory) Color(0xFFF0F9FF) else MaterialTheme.colorScheme.surface
+    val borderColor = if (hasHistory) ChatFansBlue.copy(alpha = 0.4f) else Color.LightGray.copy(alpha = 0.3f)
 
     Card(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = cardBgColor),
+        border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
     ) {
         Row(
             modifier = Modifier
-                .padding(14.dp)
+                .padding(18.dp)
                 .fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -427,48 +489,48 @@ fun DeviceCard(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = mainName,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = textColor
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color.Black
                 )
 
                 if (deviceInfo.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(1.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = deviceInfo,
-                        fontSize = 10.sp,
-                        color = subTextColor,
-                        fontWeight = FontWeight.Medium
+                        fontSize = 12.sp,
+                        color = Color.Gray,
+                        fontWeight = FontWeight.Normal
                     )
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Surface(
-                        modifier = Modifier.size(8.dp),
-                        shape = RoundedCornerShape(4.dp),
-                        color = if (peer.isOnlyChatActive) Color(0xFF2E7D32) else Color.Gray
+                        modifier = Modifier.size(10.dp),
+                        shape = CircleShape,
+                        color = if (peer.isChatFansActive) ChatFansBlue else Color.Gray
                     ) {}
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (peer.isOnlyChatActive) "OnlyChat Active" else "Disconnected",
-                        fontSize = 12.sp,
-                        color = if (peer.isOnlyChatActive) Color(0xFF2E7D32) else Color.Gray,
-                        fontWeight = FontWeight.Medium
+                        text = if (peer.isChatFansActive) "ChatFans Active" else "Disconnected",
+                        fontSize = 13.sp,
+                        color = if (peer.isChatFansActive) ChatFansBlue else Color.Gray,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
 
             Surface(
-                color = if (hasHistory) Color(0xFFC8E6C9) else MaterialTheme.colorScheme.primaryContainer,
-                shape = RoundedCornerShape(6.dp)
+                color = ChatFansBlue.copy(alpha = 0.15f),
+                shape = RoundedCornerShape(24.dp)
             ) {
                 Text(
                     text = peer.signalQuality,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (hasHistory) Color(0xFF1B5E20) else MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Black,
+                    color = ChatFansBlue,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                 )
             }
         }
@@ -533,22 +595,27 @@ fun ChatFullScreenWindow(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onDismiss) {
-                        Text("←", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                        Text("←", fontSize = 26.sp, fontWeight = FontWeight.Black, color = ChatFansBlue)
                     }
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Chat: $cleanPeerName", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = cleanPeerName,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.Black
+                    )
                 }
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), thickness = 0.5.dp)
 
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .scrollbar(listState, width = 4.dp, color = MaterialTheme.colorScheme.primary),
-                    contentPadding = PaddingValues(vertical = 4.dp, horizontal = 2.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp, alignment = Alignment.Bottom)
+                        .scrollbar(listState, width = 4.dp, color = ChatFansBlue),
+                    contentPadding = PaddingValues(vertical = 8.dp, horizontal = 2.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp, alignment = Alignment.Bottom)
                 ) {
                     items(messages) { msg ->
                         Box(
@@ -556,17 +623,22 @@ fun ChatFullScreenWindow(
                             contentAlignment = if (msg.isFromMe) Alignment.CenterEnd else Alignment.CenterStart
                         ) {
                             Surface(
-                                color = if (msg.isFromMe) MaterialTheme.colorScheme.primary else Color(0xFFE0E0E0),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.widthIn(max = 280.dp)
+                                color = if (msg.isFromMe) ChatFansBlue else Color(0xFFF0F0F0),
+                                shape = RoundedCornerShape(
+                                    topStart = 20.dp,
+                                    topEnd = 20.dp,
+                                    bottomStart = if (msg.isFromMe) 20.dp else 4.dp,
+                                    bottomEnd = if (msg.isFromMe) 4.dp else 20.dp
+                                ),
+                                modifier = Modifier.widthIn(max = 300.dp)
                             ) {
-                                Column(modifier = Modifier.padding(10.dp)) {
+                                Column(modifier = Modifier.padding(14.dp)) {
                                     if (msg.imagePath != null) {
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .height(180.dp)
-                                                .clip(RoundedCornerShape(8.dp))
+                                                .height(220.dp)
+                                                .clip(RoundedCornerShape(16.dp))
                                         ) {
                                             val bitmap = remember(msg.imagePath) {
                                                 ImageUtils.loadBitmapFromFile(msg.imagePath)
@@ -590,27 +662,27 @@ fun ChatFullScreenWindow(
                                                 Box(
                                                     modifier = Modifier
                                                         .fillMaxSize()
-                                                        .background(Color.Black.copy(alpha = 0.65f))
-                                                        .padding(12.dp),
+                                                        .background(Color.Black.copy(alpha = 0.75f))
+                                                        .padding(16.dp),
                                                     contentAlignment = Alignment.Center
                                                 ) {
                                                     Column(
                                                         horizontalAlignment = Alignment.CenterHorizontally
                                                     ) {
                                                         Text(
-                                                            text = "Transferring Photo (${(msg.progress * 100).toInt()}%)",
+                                                            text = "Uploading... ${(msg.progress * 100).toInt()}%",
                                                             color = Color.White,
-                                                            fontSize = 12.sp,
-                                                            fontWeight = FontWeight.Bold
+                                                            fontSize = 13.sp,
+                                                            fontWeight = FontWeight.Black
                                                         )
-                                                        Spacer(modifier = Modifier.height(8.dp))
+                                                        Spacer(modifier = Modifier.height(10.dp))
                                                         LinearProgressIndicator(
                                                             progress = { msg.progress },
                                                             modifier = Modifier
                                                                 .fillMaxWidth()
                                                                 .height(6.dp)
-                                                                .clip(RoundedCornerShape(3.dp)),
-                                                            color = Color(0xFF80D8FF),
+                                                                .clip(CircleShape),
+                                                            color = Color.White,
                                                             trackColor = Color.White.copy(alpha = 0.3f)
                                                         )
                                                     }
@@ -623,11 +695,12 @@ fun ChatFullScreenWindow(
                                         Text(
                                             text = msg.text,
                                             color = if (msg.isFromMe) Color.White else Color.Black,
-                                            fontSize = 15.sp
+                                            fontSize = 17.sp,
+                                            lineHeight = 24.sp
                                         )
                                     }
 
-                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Spacer(modifier = Modifier.height(6.dp))
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -635,8 +708,8 @@ fun ChatFullScreenWindow(
                                     ) {
                                         Text(
                                             text = formatTimestamp(msg.timestamp),
-                                            fontSize = 9.sp,
-                                            color = if (msg.isFromMe) Color.White.copy(alpha = 0.7f) else Color.DarkGray
+                                            fontSize = 10.sp,
+                                            color = if (msg.isFromMe) Color.White.copy(alpha = 0.8f) else Color.Gray
                                         )
                                         if (msg.isFromMe) {
                                             StatusSymbolIndicator(msg.status)
@@ -648,30 +721,31 @@ fun ChatFullScreenWindow(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 if (showEmojiPicker) {
                     Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFF5F5F5),
+                        shape = RoundedCornerShape(20.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.LightGray.copy(alpha = 0.4f)),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 6.dp)
+                            .padding(bottom = 10.dp)
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(8.dp),
+                                .padding(12.dp),
                             horizontalArrangement = Arrangement.SpaceEvenly,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             commonEmojis.forEach { emoji ->
                                 Text(
                                     text = emoji,
-                                    fontSize = 22.sp,
+                                    fontSize = 26.sp,
                                     modifier = Modifier
                                         .clickable { textInput += emoji }
-                                        .padding(4.dp)
+                                        .padding(6.dp)
                                 )
                             }
                         }
@@ -680,15 +754,17 @@ fun ChatFullScreenWindow(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     OutlinedButton(
                         onClick = { photoGalleryLauncher.launch("image/*") },
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(28.dp),
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
+                        border = androidx.compose.foundation.BorderStroke(1.dp, ChatFansBlue),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = ChatFansBlue),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
                     ) {
-                        Text("📷 Gallery", fontSize = 11.sp)
+                        Text("📷 Gallery", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
                     }
 
                     OutlinedButton(
@@ -706,67 +782,68 @@ fun ChatFullScreenWindow(
                                 e.printStackTrace()
                             }
                         },
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(28.dp),
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
+                        border = androidx.compose.foundation.BorderStroke(1.dp, ChatFansBlue),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = ChatFansBlue),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp)
                     ) {
-                        Text("🤳 Selfie", fontSize = 11.sp)
+                        Text("🤳 Selfie", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
                     }
 
-                    OutlinedButton(
+                    IconButton(
                         onClick = onSendWhoAmI,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(ChatFansBlue.copy(alpha = 0.12f), CircleShape)
                     ) {
-                        Text("👤 WhoAmI", fontSize = 11.sp)
+                        Text("👤", fontSize = 20.sp)
                     }
 
                     IconButton(
                         onClick = { showEmojiPicker = !showEmojiPicker },
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(if (showEmojiPicker) ChatFansBlue else ChatFansBlue.copy(alpha = 0.12f), CircleShape)
                     ) {
                         Text("😊", fontSize = 20.sp)
                     }
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     OutlinedTextField(
                         value = textInput,
                         onValueChange = { textInput = it },
-                        placeholder = { Text("Type message...", fontSize = 13.sp) },
+                        placeholder = { Text("Write a message...", fontSize = 15.sp) },
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(28.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = ChatFansBlue,
+                            unfocusedBorderColor = Color.LightGray
+                        ),
                         minLines = 1,
-                        maxLines = 3
+                        maxLines = 5
                     )
 
-                    Button(
+                    FloatingActionButton(
                         onClick = {
                             if (textInput.isNotBlank()) {
                                 onSendMessage(textInput)
                                 textInput = ""
                             }
                         },
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)
+                        containerColor = ChatFansBlue,
+                        contentColor = Color.White,
+                        shape = CircleShape,
+                        modifier = Modifier.size(54.dp)
                     ) {
-                        Text("Send", fontSize = 12.sp)
-                    }
-
-                    Button(
-                        onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp)
-                    ) {
-                        Text("Close", fontSize = 12.sp)
+                        Text("➤", fontSize = 22.sp, fontWeight = FontWeight.Black)
                     }
                 }
             }
@@ -775,7 +852,7 @@ fun ChatFullScreenWindow(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.95f))
+                        .background(Color.Black.copy(alpha = 0.98f))
                         .clickable { fullScreenImagePath = null },
                     contentAlignment = Alignment.Center
                 ) {
@@ -799,15 +876,15 @@ fun ChatFullScreenWindow(
 @Composable
 fun StatusSymbolIndicator(status: MessageStatus) {
     val (symbol, color) = when (status) {
-        MessageStatus.SENT -> Pair("✓ Sent", Color.White.copy(alpha = 0.6f))
-        MessageStatus.DELIVERED -> Pair("✓✓ Received", Color.White.copy(alpha = 0.85f))
-        MessageStatus.READ -> Pair("☑ Read", Color(0xFF80D8FF))
+        MessageStatus.SENT -> Pair("✓", Color.White.copy(alpha = 0.7f))
+        MessageStatus.DELIVERED -> Pair("✓✓", Color.White.copy(alpha = 0.95f))
+        MessageStatus.READ -> Pair("✓✓", Color.White)
     }
 
     Text(
         text = symbol,
-        fontSize = 10.sp,
-        fontWeight = FontWeight.Bold,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Black,
         color = color
     )
 }
@@ -849,7 +926,7 @@ fun Modifier.scrollbar(
 class ChatService : Service() {
 
     companion object {
-        const val SERVICE_ID = "com.example.onlychat.P2P_CHAT"
+        const val SERVICE_ID = "com.example.chatfans.P2P_CHAT"
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
         const val ACTION_REFRESH = "ACTION_REFRESH"
@@ -931,7 +1008,7 @@ class ChatService : Service() {
             val processors = Runtime.getRuntime().availableProcessors()
 
             val detailedInfo = """
-                👤 [Device Profile Info]
+                👤 [Fan Profile Info]
                 • Model: $manufacturer $model
                 • OS: Android $androidVersion (SDK $sdkVersion)
                 • Board/Hardware: $hardware / $board
@@ -1009,7 +1086,7 @@ class ChatService : Service() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
-            "OnlyChat::P2PWakeLock"
+            "ChatFans::P2PWakeLock"
         ).apply {
             setReferenceCounted(false)
             acquire()
@@ -1127,10 +1204,10 @@ class ChatService : Service() {
 
             val channel = NotificationChannel(
                 "incoming_messages_channel",
-                "OnlyChat Alerts & Messages",
+                "ChatFans Alerts & Messages",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Notifies when nearby devices are discovered or incoming messages arrive"
+                description = "Notifies when nearby fans are discovered or incoming messages arrive"
                 enableVibration(true)
                 setSound(soundUri, audioAttributes)
                 lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
@@ -1142,17 +1219,17 @@ class ChatService : Service() {
     }
 
     private fun startForegroundNotification() {
-        val channelId = "only_chat_channel"
+        val channelId = "chat_fans_channel"
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(channelId, "OnlyChat Active", NotificationManager.IMPORTANCE_LOW)
+            val channel = NotificationChannel(channelId, "ChatFans Active", NotificationManager.IMPORTANCE_LOW)
             manager.createNotificationChannel(channel)
         }
 
         val notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("OnlyChat Active")
-            .setContentText("Listening for nearby devices and messages...")
+            .setContentTitle("ChatFans Active")
+            .setContentText("Listening for nearby fans and messages...")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .build()
@@ -1184,8 +1261,8 @@ class ChatService : Service() {
 
         val notification = NotificationCompat.Builder(this, "incoming_messages_channel")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("New Device Discovered!")
-            .setContentText("Found nearby device: $cleanName")
+            .setContentTitle("New Fan Discovered!")
+            .setContentText("Found nearby fan: $cleanName")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
@@ -1266,7 +1343,7 @@ class ChatService : Service() {
         startP2PDiscovery()
     }
 
-    private fun addOrUpdatePeer(endpointId: String, name: String, isOnlyChatActive: Boolean = true) {
+    private fun addOrUpdatePeer(endpointId: String, name: String, isChatFansActive: Boolean = true) {
         if (isSelf(name)) return
 
         val now = System.currentTimeMillis()
@@ -1276,7 +1353,7 @@ class ChatService : Service() {
         peerLastSeenMap[endpointId] = now
 
         val existingQuality = candidatePeersMap[endpointId]?.signalQuality ?: "📶 Strong"
-        val peer = PeerDevice(endpointId, name, isOnlyChatActive, signalQuality = existingQuality)
+        val peer = PeerDevice(endpointId, name, isChatFansActive, signalQuality = existingQuality)
         candidatePeersMap[endpointId] = peer
 
         updateVisiblePeersList()
@@ -1288,8 +1365,8 @@ class ChatService : Service() {
 
             if (isSelf(info.endpointName) || info.endpointName == myName) return
 
-            val isOnlyChat = info.serviceId == SERVICE_ID
-            addOrUpdatePeer(endpointId, info.endpointName, isOnlyChatActive = isOnlyChat)
+            val isChatFans = info.serviceId == SERVICE_ID
+            addOrUpdatePeer(endpointId, info.endpointName, isChatFansActive = isChatFans)
 
             if (!connectingOrConnected.contains(endpointId) && myName >= info.endpointName) {
                 connectingOrConnected.add(endpointId)
@@ -1317,7 +1394,7 @@ class ChatService : Service() {
             if (isSelf(info.endpointName) || info.endpointName == myName) return
 
             connectingOrConnected.add(endpointId)
-            addOrUpdatePeer(endpointId, info.endpointName, isOnlyChatActive = true)
+            addOrUpdatePeer(endpointId, info.endpointName, isChatFansActive = true)
             Nearby.getConnectionsClient(this@ChatService)
                 .acceptConnection(endpointId, payloadCallback)
                 .addOnFailureListener { connectingOrConnected.remove(endpointId) }
@@ -1349,8 +1426,8 @@ class ChatService : Service() {
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             peerLastSeenMap[endpointId] = System.currentTimeMillis()
-            val senderName = candidatePeersMap[endpointId]?.name ?: "Nearby Peer"
-            val peer = PeerDevice(endpointId, senderName, isOnlyChatActive = true)
+            val senderName = candidatePeersMap[endpointId]?.name ?: "Nearby Fan"
+            val peer = PeerDevice(endpointId, senderName, isChatFansActive = true)
 
             if (payload.type == Payload.Type.BYTES) {
                 val bytes = payload.asBytes() ?: return

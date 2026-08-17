@@ -1,7 +1,6 @@
-package com.example.onlychat
+package com.example.chatfans
 
 import org.junit.Test
-
 import org.junit.Assert.*
 
 /**
