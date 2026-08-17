@@ -1167,20 +1167,21 @@ fun DeviceCard(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            modifier = Modifier.size(9.dp),
-                            shape = CircleShape,
-                            color = if (peer.isChatFansActive) ChatFansBlue else Color.Gray
-                        ) {}
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (peer.isChatFansActive) "ChatFans Active" else "Disconnected",
-                            fontSize = 12.sp,
-                            color = if (peer.isChatFansActive) ChatFansBlue else Color.Gray,
-                            fontWeight = FontWeight.Bold
-                        )
+                    if (profile != null) {
+                        val contactInfo = listOfNotNull(
+                            profile.phone.takeIf { it.isNotBlank() },
+                            profile.email.takeIf { it.isNotBlank() }
+                        ).joinToString(" , ")
+                        
+                        if (contactInfo.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = contactInfo,
+                                fontSize = 11.sp,
+                                color = ChatFansBlue,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
@@ -1272,7 +1273,9 @@ fun ChatFullScreenWindow(
 ) {
     var textInput by remember { mutableStateOf("") }
     var showEmojiPicker by remember { mutableStateOf(false) }
+    var showSendCardDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val myProfile by ChatService.userProfile.collectAsState()
     val context = LocalContext.current
 
     var fullScreenImagePath by remember { mutableStateOf<String?>(null) }
@@ -1415,7 +1418,10 @@ fun ChatFullScreenWindow(
                                         }
                                     }
 
-                                    if (msg.text.isNotBlank() && msg.imagePath == null) {
+                                    if (msg.text.startsWith("[FAN_CARD]")) {
+                                        val displayProfile = if (msg.isFromMe) myProfile else peer.profile
+                                        FanCardContent(msg.text, msg.isFromMe, displayProfile)
+                                    } else if (msg.text.isNotBlank() && msg.imagePath == null) {
                                         Text(
                                             text = msg.text,
                                             color = if (msg.isFromMe) Color.White else Color.Black,
@@ -1516,7 +1522,7 @@ fun ChatFullScreenWindow(
                     }
 
                     IconButton(
-                        onClick = onSendProfile,
+                        onClick = { showSendCardDialog = true },
                         modifier = Modifier
                             .size(40.dp)
                             .background(ChatFansBlue.copy(alpha = 0.12f), CircleShape)
@@ -1590,6 +1596,81 @@ fun ChatFullScreenWindow(
                                 .clickable { fullScreenImagePath = null },
                             contentScale = ContentScale.Fit
                         )
+                    }
+                }
+            }
+        }
+
+        if (showSendCardDialog) {
+            AlertDialog(
+                onDismissRequest = { showSendCardDialog = false },
+                title = { Text("Send Fan Card?", fontWeight = FontWeight.Bold) },
+                text = {
+                    Text("This will share your stage name, full name, email, and phone number with this fan in the chat history.")
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showSendCardDialog = false
+                            onSendProfile()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ChatFansBlue)
+                    ) {
+                        Text("Send Card", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showSendCardDialog = false }) {
+                        Text("Cancel", color = Color.Gray)
+                    }
+                },
+                shape = RoundedCornerShape(24.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun FanCardContent(data: String, isFromMe: Boolean, profile: FanProfile?) {
+    val lines = data.removePrefix("[FAN_CARD]").split("|")
+    val textColor = if (isFromMe) Color.White else Color.Black
+    
+    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+        Text(
+            text = "🪪 FAN CARD",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Black,
+            color = textColor.copy(alpha = 0.8f)
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (profile?.profilePhotoPath != null) {
+                val bitmap = remember(profile.profilePhotoPath) { ImageUtils.loadBitmapFromFile(profile.profilePhotoPath) }
+                bitmap?.let {
+                    Image(
+                        bitmap = it.asImageBitmap(),
+                        contentDescription = "Fan Photo",
+                        modifier = Modifier
+                            .size(70.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.LightGray.copy(alpha = 0.2f)),
+                        contentScale = ContentScale.Crop
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                }
+            }
+            
+            Column {
+                lines.forEach { line ->
+                    if (line.isNotBlank()) {
+                        Text(
+                            text = line,
+                            color = textColor,
+                            fontSize = 15.sp,
+                            fontWeight = if (line.startsWith("Stage:")) FontWeight.Bold else FontWeight.Normal
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
                     }
                 }
             }
@@ -1762,7 +1843,7 @@ class ChatService : Service() {
                 }
             }
 
-            val briefInfo = "👤 shared profile details"
+            val briefInfo = "[FAN_CARD]Stage: ${profile.stageName}|Name: ${profile.firstName} ${profile.lastName}|Email: ${profile.email}|Phone: ${profile.phone}"
             sendMessage(context, endpointId, peerName, briefInfo)
         }
 
