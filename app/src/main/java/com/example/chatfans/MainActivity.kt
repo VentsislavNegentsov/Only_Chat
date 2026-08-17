@@ -109,7 +109,8 @@ data class PeerDevice(
     val endpointId: String,
     val name: String,
     val isChatFansActive: Boolean = true,
-    val signalQuality: String = "📶 Strong"
+    val signalQuality: String = "LEVEL_1",
+    val profile: FanProfile? = null
 )
 
 data class ChatMessage(
@@ -241,6 +242,49 @@ object ChatStorageHelper {
         }
         return historyMap
     }
+
+    fun saveReceivedProfiles(context: Context, profiles: Map<String, FanProfile>) {
+        try {
+            val root = JSONObject()
+            for ((peerName, p) in profiles) {
+                val obj = JSONObject().apply {
+                    put("firstName", p.firstName)
+                    put("lastName", p.lastName)
+                    put("stageName", p.stageName)
+                    put("email", p.email)
+                    put("phone", p.phone)
+                    put("profilePhotoPath", p.profilePhotoPath ?: "")
+                }
+                root.put(peerName, obj)
+            }
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putString("received_profiles", root.toString()).apply()
+        } catch (e: Exception) {}
+    }
+
+    fun loadReceivedProfiles(context: Context): Map<String, FanProfile> {
+        val map = mutableMapOf<String, FanProfile>()
+        try {
+            val jsonStr = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString("received_profiles", null) ?: return map
+            val root = JSONObject(jsonStr)
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val peerName = keys.next()
+                val obj = root.getJSONObject(peerName)
+                val p = FanProfile(
+                    firstName = obj.optString("firstName"),
+                    lastName = obj.optString("lastName"),
+                    stageName = obj.optString("stageName"),
+                    email = obj.optString("email"),
+                    phone = obj.optString("phone"),
+                    profilePhotoPath = obj.optString("profilePhotoPath").takeIf { it.isNotEmpty() }
+                )
+                map[peerName] = p
+            }
+        } catch (e: Exception) {}
+        return map
+    }
 }
 
 object ImageUtils {
@@ -298,8 +342,8 @@ object ImageUtils {
         return try {
             val file = File(context.filesDir, "profile_photo.jpg")
             
-            // Target: 240p (approx 426x240 or 320x240)
-            val targetMaxDim = 320
+            // Target: 240p (approx 426x240)
+            val targetMaxDim = 426
             
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
@@ -1057,9 +1101,15 @@ fun DeviceCard(
     hasHistory: Boolean,
     onClick: () -> Unit
 ) {
+    val profile = peer.profile
     val nameParts = remember(peer.name) { peer.name.split("|") }
-    val mainName = nameParts.firstOrNull() ?: peer.name
-    val deviceInfo = nameParts.getOrNull(1) ?: ""
+    
+    val displayName = profile?.stageName?.takeIf { it.isNotBlank() } ?: (nameParts.firstOrNull() ?: peer.name)
+    val subInfo = if (profile != null) {
+        "${profile.firstName} ${profile.lastName}".trim().takeIf { it.isNotBlank() } ?: "ChatFans Member"
+    } else {
+        nameParts.getOrNull(1) ?: ""
+    }
 
     val cardBgColor = if (hasHistory) Color(0xFFF0F9FF) else MaterialTheme.colorScheme.surface
     val borderColor = if (hasHistory) ChatFansBlue.copy(alpha = 0.4f) else Color.LightGray.copy(alpha = 0.3f)
@@ -1074,43 +1124,64 @@ fun DeviceCard(
     ) {
         Row(
             modifier = Modifier
-                .padding(18.dp)
+                .padding(14.dp)
                 .fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = mainName,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color.Black
-                )
-
-                if (deviceInfo.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = deviceInfo,
-                        fontSize = 12.sp,
-                        color = Color.Gray,
-                        fontWeight = FontWeight.Normal
-                    )
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                if (profile?.profilePhotoPath != null) {
+                    val bitmap = remember(profile.profilePhotoPath) { ImageUtils.loadBitmapFromFile(profile.profilePhotoPath) }
+                    bitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "Profile Photo",
+                            modifier = Modifier
+                                .size(52.dp)
+                                .clip(CircleShape)
+                                .background(Color.LightGray.copy(alpha = 0.2f)),
+                            contentScale = ContentScale.Crop
+                        )
+                    } ?: ProfileIconPlaceholder(displayName)
+                } else if (profile != null) {
+                    ProfileIconPlaceholder(displayName)
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        modifier = Modifier.size(10.dp),
-                        shape = CircleShape,
-                        color = if (peer.isChatFansActive) ChatFansBlue else Color.Gray
-                    ) {}
-                    Spacer(modifier = Modifier.width(8.dp))
+                if (profile != null) Spacer(modifier = Modifier.width(14.dp))
+
+                Column {
                     Text(
-                        text = if (peer.isChatFansActive) "ChatFans Active" else "Disconnected",
-                        fontSize = 13.sp,
-                        color = if (peer.isChatFansActive) ChatFansBlue else Color.Gray,
-                        fontWeight = FontWeight.Bold
+                        text = displayName,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.Black
                     )
+
+                    if (subInfo.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(1.dp))
+                        Text(
+                            text = subInfo,
+                            fontSize = 12.sp,
+                            color = Color.Gray,
+                            fontWeight = FontWeight.Normal
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            modifier = Modifier.size(9.dp),
+                            shape = CircleShape,
+                            color = if (peer.isChatFansActive) ChatFansBlue else Color.Gray
+                        ) {}
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (peer.isChatFansActive) "ChatFans Active" else "Disconnected",
+                            fontSize = 12.sp,
+                            color = if (peer.isChatFansActive) ChatFansBlue else Color.Gray,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
 
@@ -1136,6 +1207,24 @@ fun DeviceCard(
                 SignalIndicator(quality = peer.signalQuality)
             }
         }
+    }
+}
+
+@Composable
+fun ProfileIconPlaceholder(name: String) {
+    Box(
+        modifier = Modifier
+            .size(52.dp)
+            .clip(CircleShape)
+            .background(ChatFansBlue.copy(alpha = 0.1f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = name.take(1).uppercase(),
+            color = ChatFansBlue,
+            fontWeight = FontWeight.Black,
+            fontSize = 20.sp
+        )
     }
 }
 
@@ -1580,8 +1669,12 @@ class ChatService : Service() {
         private val _userProfile = MutableStateFlow<FanProfile?>(null)
         val userProfile: StateFlow<FanProfile?> = _userProfile
 
+        private val _receivedProfiles = MutableStateFlow<Map<String, FanProfile>>(emptyMap())
+        val receivedProfiles: StateFlow<Map<String, FanProfile>> = _receivedProfiles
+
         private val payloadMsgMap = mutableMapOf<Long, Pair<String, String>>()
         private val incomingPhotoMeta = mutableMapOf<Long, Pair<String, String>>()
+        private val incomingProfilePhotoMeta = mutableMapOf<Long, String>() // payloadId -> peerName
 
         private val peerLastSeenMap = mutableMapOf<String, Long>()
         private val peerFirstSeenMap = mutableMapOf<String, Long>()
@@ -1640,15 +1733,37 @@ class ChatService : Service() {
 
         fun sendUserProfile(context: Context, endpointId: String, peerName: String) {
             val profile = _userProfile.value ?: return
-            val detailedInfo = """
-                👤 [Fan Profile]
-                • Name: ${profile.firstName} ${profile.lastName}
-                • Stage Name: ${profile.stageName}
-                • Email: ${profile.email}
-                • Phone: ${profile.phone}
-            """.trimIndent()
+            
+            val msgId = UUID.randomUUID().toString()
+            val json = JSONObject().apply {
+                put("type", "PROFILE_CARD")
+                put("id", msgId)
+                put("firstName", profile.firstName)
+                put("lastName", profile.lastName)
+                put("stageName", profile.stageName)
+                put("email", profile.email)
+                put("phone", profile.phone)
+            }
 
-            sendMessage(context, endpointId, peerName, detailedInfo)
+            val metaPayload = Payload.fromBytes(json.toString().toByteArray(StandardCharsets.UTF_8))
+            val client = Nearby.getConnectionsClient(context)
+            client.sendPayload(endpointId, metaPayload)
+
+            profile.profilePhotoPath?.let { path ->
+                val file = File(path)
+                if (file.exists()) {
+                    val filePayload = Payload.fromFile(file)
+                    val photoJson = JSONObject().apply {
+                        put("type", "PROFILE_PHOTO_META")
+                        put("payloadId", filePayload.id)
+                    }
+                    client.sendPayload(endpointId, Payload.fromBytes(photoJson.toString().toByteArray(StandardCharsets.UTF_8)))
+                    client.sendPayload(endpointId, filePayload)
+                }
+            }
+
+            val briefInfo = "👤 shared profile details"
+            sendMessage(context, endpointId, peerName, briefInfo)
         }
 
         fun sendPhotoUri(context: Context, endpointId: String, peerName: String, uri: Uri) {
@@ -1740,6 +1855,9 @@ class ChatService : Service() {
 
         val savedProfile = ChatStorageHelper.loadProfile(this)
         _userProfile.value = savedProfile
+
+        val savedReceived = ChatStorageHelper.loadReceivedProfiles(this)
+        _receivedProfiles.value = savedReceived
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -1810,8 +1928,12 @@ class ChatService : Service() {
 
     private fun updateVisiblePeersList() {
         val now = System.currentTimeMillis()
+        val profiles = _receivedProfiles.value
 
-        val stablePeers = candidatePeersMap.values.filter { peer ->
+        val stablePeers = candidatePeersMap.values.map { peer ->
+            val p = profiles[peer.name]
+            if (p != null) peer.copy(profile = p) else peer
+        }.filter { peer ->
             val firstSeen = peerFirstSeenMap[peer.endpointId] ?: now
             val lastSeen = peerLastSeenMap[peer.endpointId] ?: 0L
             (now - firstSeen >= 10_000) && (now - lastSeen <= 12_000)
@@ -2134,11 +2256,56 @@ class ChatService : Service() {
                             val msgId = json.getString("id")
                             updateMessageStatus(senderName, msgId, MessageStatus.READ)
                         }
+
+                        "PROFILE_CARD" -> {
+                            val newProfile = FanProfile(
+                                firstName = json.optString("firstName"),
+                                lastName = json.optString("lastName"),
+                                stageName = json.optString("stageName"),
+                                email = json.optString("email"),
+                                phone = json.optString("phone")
+                            )
+                            val currentProfiles = _receivedProfiles.value.toMutableMap()
+                            currentProfiles[senderName] = newProfile
+                            _receivedProfiles.value = currentProfiles
+                            ChatStorageHelper.saveReceivedProfiles(this@ChatService, currentProfiles)
+                            updateVisiblePeersList()
+                        }
+
+                        "PROFILE_PHOTO_META" -> {
+                            val filePayloadId = json.getLong("payloadId")
+                            incomingProfilePhotoMeta[filePayloadId] = senderName
+                        }
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
             } else if (payload.type == Payload.Type.FILE) {
+                val profilePeerName = incomingProfilePhotoMeta[payload.id]
+                if (profilePeerName != null) {
+                    val targetFile = File(filesDir, "profile_${profilePeerName.hashCode()}.jpg")
+                    val pfd = payload.asFile()?.asParcelFileDescriptor()
+                    if (pfd != null) {
+                        try {
+                            FileInputStream(pfd.fileDescriptor).use { input ->
+                                FileOutputStream(targetFile).use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            val currentProfiles = _receivedProfiles.value.toMutableMap()
+                            val existing = currentProfiles[profilePeerName] ?: FanProfile()
+                            currentProfiles[profilePeerName] = existing.copy(profilePhotoPath = targetFile.absolutePath)
+                            _receivedProfiles.value = currentProfiles
+                            ChatStorageHelper.saveReceivedProfiles(this@ChatService, currentProfiles)
+                            incomingProfilePhotoMeta.remove(payload.id)
+                            updateVisiblePeersList()
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+                    return
+                }
+
                 val meta = incomingPhotoMeta[payload.id] ?: return
                 val (peerName, msgId) = meta
 
