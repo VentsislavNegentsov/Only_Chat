@@ -101,7 +101,8 @@ data class FanProfile(
     val lastName: String = "",
     val stageName: String = "",
     val email: String = "",
-    val phone: String = ""
+    val phone: String = "",
+    val profilePhotoPath: String? = null
 )
 
 data class PeerDevice(
@@ -153,6 +154,7 @@ object ChatStorageHelper {
             put("stageName", profile.stageName)
             put("email", profile.email)
             put("phone", profile.phone)
+            put("profilePhotoPath", profile.profilePhotoPath ?: "")
         }
         prefs.edit().putString(KEY_PROFILE, json.toString()).apply()
     }
@@ -167,7 +169,8 @@ object ChatStorageHelper {
                 lastName = json.optString("lastName"),
                 stageName = json.optString("stageName"),
                 email = json.optString("email"),
-                phone = json.optString("phone")
+                phone = json.optString("phone"),
+                profilePhotoPath = json.optString("profilePhotoPath").takeIf { it.isNotEmpty() }
             )
         } catch (e: Exception) {
             null
@@ -291,6 +294,50 @@ object ImageUtils {
         }
     }
 
+    fun processProfilePhoto(context: Context, uri: Uri): String? {
+        return try {
+            val file = File(context.filesDir, "profile_photo.jpg")
+            
+            // Target: 240p (approx 426x240 or 320x240)
+            val targetMaxDim = 320
+            
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+            
+            var inSampleSize = 1
+            if (options.outHeight > targetMaxDim || options.outWidth > targetMaxDim) {
+                val halfHeight = options.outHeight / 2
+                val halfWidth = options.outWidth / 2
+                while (halfHeight / inSampleSize >= targetMaxDim && halfWidth / inSampleSize >= targetMaxDim) {
+                    inSampleSize *= 2
+                }
+            }
+            
+            val decodeOptions = BitmapFactory.Options().apply { this.inSampleSize = inSampleSize }
+            val sourceBitmap = context.contentResolver.openInputStream(uri)?.use { 
+                BitmapFactory.decodeStream(it, null, decodeOptions) 
+            } ?: return null
+            
+            val scale = targetMaxDim.toFloat() / Math.max(sourceBitmap.width, sourceBitmap.height)
+            val finalWidth = (sourceBitmap.width * scale).toInt()
+            val finalHeight = (sourceBitmap.height * scale).toInt()
+            
+            val resizedBitmap = Bitmap.createScaledBitmap(sourceBitmap, finalWidth, finalHeight, true)
+            
+            FileOutputStream(file).use { out ->
+                resizedBitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+            }
+            
+            sourceBitmap.recycle()
+            if (resizedBitmap != sourceBitmap) resizedBitmap.recycle()
+            
+            file.absolutePath
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
     fun loadBitmapFromFile(filePath: String): Bitmap? {
         return try {
             BitmapFactory.decodeFile(filePath)
@@ -372,6 +419,7 @@ class MainActivity : ComponentActivity() {
                             MainScreen(
                                 peers = peers,
                                 chatHistoryMap = chatHistoryMap,
+                                userProfile = userProfile,
                                 onDeviceClick = { peer -> ChatService.setActiveChatPeer(peer) },
                                 onHuntClick = { moveTaskToBack(true) },
                                 onEditProfileClick = { isEditingProfile = true },
@@ -462,11 +510,23 @@ fun ProfileSetupScreen(
     onSave: (FanProfile) -> Unit,
     onCancel: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
     var firstName by remember { mutableStateOf(initialProfile.firstName) }
     var lastName by remember { mutableStateOf(initialProfile.lastName) }
     var stageName by remember { mutableStateOf(initialProfile.stageName) }
     var email by remember { mutableStateOf(initialProfile.email) }
     var phone by remember { mutableStateOf(initialProfile.phone) }
+    var photoPath by remember { mutableStateOf(initialProfile.profilePhotoPath) }
+
+    var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = TakePictureWithFrontCamera()
+    ) { success ->
+        if (success && tempCameraUri != null) {
+            val savedPath = ImageUtils.processProfilePhoto(context, tempCameraUri!!)
+            if (savedPath != null) photoPath = savedPath
+        }
+    }
 
     if (onCancel != null) {
         BackHandler(onBack = onCancel)
@@ -475,91 +535,160 @@ fun ProfileSetupScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp)
+            .padding(horizontal = 24.dp, vertical = 12.dp)
+            .statusBarsPadding()
             .navigationBarsPadding()
-            .statusBarsPadding(),
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.Top
     ) {
-        ChatFansLogo(modifier = Modifier.size(80.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ChatFansLogo(modifier = Modifier.size(48.dp))
+            Text(
+                text = if (onCancel == null) "Create Profile" else "ChatFans Profile",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Black,
+                color = Color.Black
+            )
+            if (onCancel != null) {
+                TextButton(onClick = onCancel) {
+                    Text("Cancel", color = ChatFansBlue)
+                }
+            } else {
+                Spacer(modifier = Modifier.width(48.dp))
+            }
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = if (onCancel == null) "Create Fan Profile" else "Edit Fan Profile",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Black,
-            color = Color.Black
-        )
-        Text(
-            text = if (onCancel == null) "Set up your identity to start chatting" else "Update your details anytime",
-            fontSize = 14.sp,
-            color = Color.Gray,
-            modifier = Modifier.padding(bottom = 32.dp)
-        )
+
+        // Profile Photo Section
+        Box(
+            modifier = Modifier
+                .size(100.dp)
+                .clip(CircleShape)
+                .background(Color.LightGray.copy(alpha = 0.3f))
+                .clickable {
+                    try {
+                        val photoFile = File(context.cacheDir, "profile_temp.jpg")
+                        val uri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            photoFile
+                        )
+                        tempCameraUri = uri
+                        cameraLauncher.launch(uri)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            if (photoPath != null) {
+                val bitmap = remember(photoPath) { ImageUtils.loadBitmapFromFile(photoPath!!) }
+                bitmap?.let {
+                    Image(
+                        bitmap = it.asImageBitmap(),
+                        contentDescription = "Profile Photo",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            } else {
+                Icon(
+                    Icons.Default.AccountCircle,
+                    contentDescription = "Take Photo",
+                    modifier = Modifier.size(64.dp),
+                    tint = Color.Gray
+                )
+            }
+            
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(24.dp),
+                color = Color.Black.copy(alpha = 0.5f)
+            ) {
+                Text(
+                    "Selfie",
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.wrapContentSize(Alignment.Center)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        val textFieldModifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+        val supportingText: @Composable () -> Unit = { Text("Not mandatory", fontSize = 10.sp, color = Color.Gray) }
 
         OutlinedTextField(
             value = firstName,
             onValueChange = { firstName = it },
-            label = { Text("First Name") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            label = { Text("First Name", fontSize = 12.sp) },
+            modifier = textFieldModifier,
+            shape = RoundedCornerShape(12.dp),
+            supportingText = supportingText,
+            singleLine = true
         )
-        Spacer(modifier = Modifier.height(8.dp))
         OutlinedTextField(
             value = lastName,
             onValueChange = { lastName = it },
-            label = { Text("Last Name") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            label = { Text("Last Name", fontSize = 12.sp) },
+            modifier = textFieldModifier,
+            shape = RoundedCornerShape(12.dp),
+            supportingText = supportingText,
+            singleLine = true
         )
-        Spacer(modifier = Modifier.height(8.dp))
         OutlinedTextField(
             value = stageName,
             onValueChange = { stageName = it },
-            label = { Text("Stage Name / Display Name") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            label = { Text("Stage Name / Display Name", fontSize = 12.sp) },
+            modifier = textFieldModifier,
+            shape = RoundedCornerShape(12.dp),
+            supportingText = { Text("Recommended for discovery", fontSize = 10.sp, color = ChatFansBlue) },
+            singleLine = true
         )
-        Spacer(modifier = Modifier.height(8.dp))
         OutlinedTextField(
             value = email,
             onValueChange = { email = it },
-            label = { Text("Email Address") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            label = { Text("Email Address", fontSize = 12.sp) },
+            modifier = textFieldModifier,
+            shape = RoundedCornerShape(12.dp),
+            supportingText = supportingText,
+            singleLine = true
         )
-        Spacer(modifier = Modifier.height(8.dp))
         OutlinedTextField(
             value = phone,
             onValueChange = { phone = it },
-            label = { Text("Phone Number") },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
+            label = { Text("Phone Number", fontSize = 12.sp) },
+            modifier = textFieldModifier,
+            shape = RoundedCornerShape(12.dp),
+            supportingText = supportingText,
+            singleLine = true
         )
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
         Button(
             onClick = {
                 if (stageName.isNotBlank()) {
-                    onSave(FanProfile(firstName, lastName, stageName, email, phone))
+                    onSave(FanProfile(firstName, lastName, stageName, email, phone, photoPath))
                 }
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(28.dp),
+                .height(50.dp),
+            shape = RoundedCornerShape(25.dp),
             colors = ButtonDefaults.buttonColors(containerColor = ChatFansBlue)
         ) {
             Text(if (onCancel == null) "Complete Setup" else "Save Changes", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        }
-        
-        if (onCancel != null) {
-            TextButton(
-                onClick = onCancel,
-                modifier = Modifier.padding(top = 8.dp)
-            ) {
-                Text("Cancel", color = ChatFansBlue)
-            }
         }
     }
 }
@@ -675,6 +804,7 @@ fun ScanningIndicator(modifier: Modifier = Modifier) {
 fun MainScreen(
     peers: List<PeerDevice>,
     chatHistoryMap: Map<String, List<ChatMessage>>,
+    userProfile: FanProfile?,
     onDeviceClick: (PeerDevice) -> Unit,
     onHuntClick: () -> Unit,
     onEditProfileClick: () -> Unit,
@@ -709,7 +839,21 @@ fun MainScreen(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onEditProfileClick) {
-                    Icon(Icons.Default.AccountCircle, contentDescription = "Edit Profile", tint = ChatFansBlue)
+                    if (userProfile?.profilePhotoPath != null) {
+                        val bitmap = remember(userProfile.profilePhotoPath) { 
+                            ImageUtils.loadBitmapFromFile(userProfile.profilePhotoPath) 
+                        }
+                        bitmap?.let {
+                            Image(
+                                bitmap = it.asImageBitmap(),
+                                contentDescription = "My Profile",
+                                modifier = Modifier.size(24.dp).clip(CircleShape),
+                                contentScale = ContentScale.Crop
+                            )
+                        } ?: Icon(Icons.Default.AccountCircle, contentDescription = "Edit Profile", tint = ChatFansBlue)
+                    } else {
+                        Icon(Icons.Default.AccountCircle, contentDescription = "Edit Profile", tint = ChatFansBlue)
+                    }
                 }
                 IconButton(onClick = onExitClick) {
                     Icon(Icons.Default.PowerSettingsNew, contentDescription = "Exit", tint = Color.Red)
@@ -1128,7 +1272,7 @@ fun ChatFullScreenWindow(
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .height(220.dp)
+                                                .heightIn(max = 400.dp) // Adaptive height up to 400dp
                                                 .clip(RoundedCornerShape(16.dp))
                                         ) {
                                             val bitmap = remember(msg.imagePath) {
@@ -1145,7 +1289,7 @@ fun ChatFullScreenWindow(
                                                                 fullScreenImagePath = msg.imagePath
                                                             }
                                                         },
-                                                    contentScale = ContentScale.Crop
+                                                    contentScale = ContentScale.Fit
                                                 )
                                             }
 

@@ -51,6 +51,7 @@
             android:exported="true"
             android:launchMode="singleTop"
             android:showWhenLocked="true"
+            android:screenOrientation="portrait"
             android:turnScreenOn="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
