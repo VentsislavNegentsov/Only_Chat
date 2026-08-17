@@ -1,6 +1,7 @@
 package com.example.chatfans
 
 import android.Manifest
+import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -23,6 +24,7 @@ import android.provider.Settings
 import android.util.Base64
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -35,8 +37,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -45,11 +53,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -83,6 +93,14 @@ import java.util.*
 // ============================================================================
 
 enum class MessageStatus { SENT, DELIVERED, READ }
+
+data class FanProfile(
+    val firstName: String = "",
+    val lastName: String = "",
+    val stageName: String = "",
+    val email: String = "",
+    val phone: String = ""
+)
 
 data class PeerDevice(
     val endpointId: String,
@@ -122,6 +140,37 @@ class TakePictureWithFrontCamera : ActivityResultContracts.TakePicture() {
 
 object ChatStorageHelper {
     private const val FILE_NAME = "chat_history_v3.json"
+    private const val PREFS_NAME = "chatfans_prefs"
+    private const val KEY_PROFILE = "user_profile"
+
+    fun saveProfile(context: Context, profile: FanProfile) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val json = JSONObject().apply {
+            put("firstName", profile.firstName)
+            put("lastName", profile.lastName)
+            put("stageName", profile.stageName)
+            put("email", profile.email)
+            put("phone", profile.phone)
+        }
+        prefs.edit().putString(KEY_PROFILE, json.toString()).apply()
+    }
+
+    fun loadProfile(context: Context): FanProfile? {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val jsonStr = prefs.getString(KEY_PROFILE, null) ?: return null
+        return try {
+            val json = JSONObject(jsonStr)
+            FanProfile(
+                firstName = json.optString("firstName"),
+                lastName = json.optString("lastName"),
+                stageName = json.optString("stageName"),
+                email = json.optString("email"),
+                phone = json.optString("phone")
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     fun saveHistory(context: Context, history: Map<String, List<ChatMessage>>) {
         try {
@@ -262,31 +311,51 @@ class MainActivity : ComponentActivity() {
                 val peers by ChatService.discoveredPeers.collectAsState()
                 val chatHistoryMap by ChatService.chatHistoryMap.collectAsState()
                 val activeChatPeer by ChatService.activeChatPeer.collectAsState()
+                val userProfile by ChatService.userProfile.collectAsState()
                 val context = LocalContext.current
+                
+                var isEditingProfile by remember { mutableStateOf(false) }
 
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        MainScreen(
-                            peers = peers,
-                            chatHistoryMap = chatHistoryMap,
-                            onDeviceClick = { peer -> ChatService.setActiveChatPeer(peer) },
-                            onHuntClick = { moveTaskToBack(true) }
+                    if (userProfile == null || isEditingProfile) {
+                        ProfileSetupScreen(
+                            initialProfile = userProfile ?: FanProfile(),
+                            onSave = { profile ->
+                                ChatStorageHelper.saveProfile(context, profile)
+                                ChatService.setUserProfile(profile)
+                                isEditingProfile = false
+                            },
+                            onCancel = if (userProfile != null) { { isEditingProfile = false } } else null
                         )
-
-                        activeChatPeer?.let { peer ->
-                            val peerMessages = chatHistoryMap[peer.name] ?: emptyList()
-
-                            ChatFullScreenWindow(
-                                peer = peer,
-                                messages = peerMessages,
-                                onDismiss = { ChatService.setActiveChatPeer(null) },
-                                onSendMessage = { text -> ChatService.sendMessage(context, peer.endpointId, peer.name, text) },
-                                onSendWhoAmI = { ChatService.sendWhoAmI(context, peer.endpointId, peer.name) },
-                                onSendPhotoUri = { uri -> ChatService.sendPhotoUri(context, peer.endpointId, peer.name, uri) }
+                    } else {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            MainScreen(
+                                peers = peers,
+                                chatHistoryMap = chatHistoryMap,
+                                onDeviceClick = { peer -> ChatService.setActiveChatPeer(peer) },
+                                onHuntClick = { moveTaskToBack(true) },
+                                onEditProfileClick = { isEditingProfile = true },
+                                onExitClick = {
+                                    ChatService.stopService(context)
+                                    (context as? Activity)?.finishAffinity()
+                                }
                             )
+
+                            activeChatPeer?.let { peer ->
+                                val peerMessages = chatHistoryMap[peer.name] ?: emptyList()
+
+                                ChatFullScreenWindow(
+                                    peer = peer,
+                                    messages = peerMessages,
+                                    onDismiss = { ChatService.setActiveChatPeer(null) },
+                                    onSendMessage = { text -> ChatService.sendMessage(context, peer.endpointId, peer.name, text) },
+                                    onSendProfile = { ChatService.sendUserProfile(context, peer.endpointId, peer.name) },
+                                    onSendPhotoUri = { uri -> ChatService.sendPhotoUri(context, peer.endpointId, peer.name, uri) }
+                                )
+                            }
                         }
                     }
                 }
@@ -351,43 +420,159 @@ class MainActivity : ComponentActivity() {
 // ============================================================================
 
 @Composable
+fun ProfileSetupScreen(
+    initialProfile: FanProfile,
+    onSave: (FanProfile) -> Unit,
+    onCancel: (() -> Unit)? = null
+) {
+    var firstName by remember { mutableStateOf(initialProfile.firstName) }
+    var lastName by remember { mutableStateOf(initialProfile.lastName) }
+    var stageName by remember { mutableStateOf(initialProfile.stageName) }
+    var email by remember { mutableStateOf(initialProfile.email) }
+    var phone by remember { mutableStateOf(initialProfile.phone) }
+
+    if (onCancel != null) {
+        BackHandler(onBack = onCancel)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp)
+            .navigationBarsPadding()
+            .statusBarsPadding(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        ChatFansLogo(modifier = Modifier.size(80.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = if (onCancel == null) "Create Fan Profile" else "Edit Fan Profile",
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Black,
+            color = Color.Black
+        )
+        Text(
+            text = if (onCancel == null) "Set up your identity to start chatting" else "Update your details anytime",
+            fontSize = 14.sp,
+            color = Color.Gray,
+            modifier = Modifier.padding(bottom = 32.dp)
+        )
+
+        OutlinedTextField(
+            value = firstName,
+            onValueChange = { firstName = it },
+            label = { Text("First Name") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = lastName,
+            onValueChange = { lastName = it },
+            label = { Text("Last Name") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = stageName,
+            onValueChange = { stageName = it },
+            label = { Text("Stage Name / Display Name") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("Email Address") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = phone,
+            onValueChange = { phone = it },
+            label = { Text("Phone Number") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        )
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+        Button(
+            onClick = {
+                if (stageName.isNotBlank()) {
+                    onSave(FanProfile(firstName, lastName, stageName, email, phone))
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(28.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = ChatFansBlue)
+        ) {
+            Text(if (onCancel == null) "Complete Setup" else "Save Changes", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        }
+        
+        if (onCancel != null) {
+            TextButton(
+                onClick = onCancel,
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text("Cancel", color = ChatFansBlue)
+            }
+        }
+    }
+}
+
+@Composable
 fun ChatFansLogo(modifier: Modifier = Modifier) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val canvasWidth = size.width
             val canvasHeight = size.height
             
-            // Draw circle background
+            // 1. Draw circle background
             drawCircle(
                 color = ChatFansBlue,
                 radius = canvasWidth / 2f
             )
             
-            // Draw stylized 'of' inspired shape (simplified)
-            val path = Path().apply {
-                moveTo(canvasWidth * 0.3f, canvasHeight * 0.5f)
-                quadraticBezierTo(
-                    canvasWidth * 0.4f, canvasHeight * 0.2f,
-                    canvasWidth * 0.7f, canvasHeight * 0.3f
-                )
-                lineTo(canvasWidth * 0.8f, canvasHeight * 0.45f)
-                quadraticBezierTo(
-                    canvasWidth * 0.6f, canvasHeight * 0.5f,
-                    canvasWidth * 0.5f, canvasHeight * 0.8f
-                )
-                close()
-            }
+            val strokeWidth = canvasWidth * 0.08f
+            val circleRadius = canvasWidth * 0.25f
             
-            drawPath(
-                path = path,
-                color = Color.White,
-                style = Fill
-            )
-            
+            // 2. Draw 'O' (left circle)
             drawCircle(
                 color = Color.White,
-                radius = canvasWidth * 0.15f,
-                center = Offset(canvasWidth * 0.35f, canvasHeight * 0.65f)
+                radius = circleRadius,
+                center = Offset(canvasWidth * 0.38f, canvasHeight * 0.5f),
+                style = Stroke(width = strokeWidth)
+            )
+            
+            // 3. Draw 'C' (right arc) interlocking
+            val cRect = Rect(
+                left = canvasWidth * 0.40f,
+                top = canvasHeight * 0.25f,
+                right = canvasWidth * 0.90f,
+                bottom = canvasHeight * 0.75f
+            )
+            
+            drawPath(
+                path = Path().apply {
+                    addArc(cRect, 40f, 280f)
+                },
+                color = Color.White,
+                style = Stroke(width = strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            )
+            
+            // 4. Draw the 'Eye' dot in the middle of the interlocking area
+            drawCircle(
+                color = Color.White,
+                radius = strokeWidth / 2f,
+                center = Offset(canvasWidth * 0.54f, canvasHeight * 0.5f),
+                style = Fill
             )
         }
     }
@@ -398,8 +583,13 @@ fun MainScreen(
     peers: List<PeerDevice>,
     chatHistoryMap: Map<String, List<ChatMessage>>,
     onDeviceClick: (PeerDevice) -> Unit,
-    onHuntClick: () -> Unit
+    onHuntClick: () -> Unit,
+    onEditProfileClick: () -> Unit,
+    onExitClick: () -> Unit
 ) {
+    var showMenu by remember { mutableStateOf(false) }
+    var showAboutDialog by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -418,25 +608,69 @@ fun MainScreen(
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.SansSerif,
-                    color = Color.Black
+                    color = ChatFansBlue
                 )
             }
 
-            OutlinedButton(
-                onClick = onHuntClick,
-                shape = RoundedCornerShape(24.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, ChatFansBlue),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = ChatFansBlue),
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp)
-            ) {
-                Text("🏹 Hunt", fontSize = 14.sp, fontWeight = FontWeight.Black)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onEditProfileClick) {
+                    Icon(Icons.Default.AccountCircle, contentDescription = "Edit Profile", tint = ChatFansBlue)
+                }
+                IconButton(onClick = onExitClick) {
+                    Icon(Icons.Default.PowerSettingsNew, contentDescription = "Exit", tint = Color.Red)
+                }
+                Box {
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More", tint = Color.Gray)
+                    }
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("About") },
+                            onClick = {
+                                showMenu = false
+                                showAboutDialog = true
+                            }
+                        )
+                    }
+                }
             }
         }
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🟢 Searching for nearby fans", fontSize = 14.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold)
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.End
+        ) {
+            Text(
+                text = "🟢 Searching for nearby fans",
+                fontSize = 14.sp,
+                color = Color(0xFF2E7D32),
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedButton(
+                onClick = onHuntClick,
+                modifier = Modifier.fillMaxWidth(0.8f),
+                shape = RoundedCornerShape(24.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, ChatFansBlue),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = ChatFansBlue),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    text = "🟢 Run in Background",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Black,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -456,6 +690,73 @@ fun MainScreen(
             }
         }
     }
+
+    if (showAboutDialog) {
+        AboutDialog(onDismiss = { showAboutDialog = false })
+    }
+}
+
+@Composable
+fun AboutDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = ChatFansBlue)
+            }
+        },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ChatFansLogo(modifier = Modifier.size(28.dp))
+                Spacer(modifier = Modifier.width(10.dp))
+                Text("About ChatFans", fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            val scrollState = rememberScrollState()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 400.dp)
+                    .verticalScroll(scrollState)
+            ) {
+                Text(
+                    text = "Welcome to ChatFans—your modern, off-grid radar for real-world connection, inspired by the classic Japanese proximity-dating phenomenon (Lovegety). Whether you are navigating a bustling mall, riding the subway, or hanging out at a bar, this app helps you discover, flirt, and connect with people in your immediate perimeter without relying on cellular data or an internet connection.",
+                    fontSize = 14.sp
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(text = "🚀 How It Works", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text(
+                    text = "Off-Grid P2P Mesh: Uses local Bluetooth and Wi-Fi Direct technologies to establish a direct device-to-device network completely independent of cell towers or routers.\n\n" +
+                           "Live Radar Scan: Continuously sweeps your surroundings for active peers who are nearby and ready to socialize.\n\n" +
+                           "Dynamic Signal Meter: Monitors live connection quality (📶 Strong, 📶 Fair, 📶 Weak) based on real-time link feedback, giving you an idea of how close a match might be.",
+                    fontSize = 14.sp
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(text = "💬 Key Features", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text(
+                    text = "Direct Messaging & Emojis: Break the ice with instant text messaging and a quick emoji picker.\n\n" +
+                           "Photo & Selfie Sharing: Share memorable snapshots straight from your gallery or capture a quick front-camera selfie.\n\n" +
+                           "Fan Profiling: Share your personal profile (Name, Email, etc.) using the profile feature.\n\n" +
+                           "Lockscreen Alerts: Receive instant notifications, sounds, and vibrations the moment a new fan enters your radar range.\n\n" +
+                           "Background Mode: Quickly minimize or push the app to the background using the dedicated 🟢 Run in Background button when you want to keep a low profile.",
+                    fontSize = 14.sp
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(text = "💡 How to Use", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text(
+                    text = "Enable Radio & Location: Ensure your Bluetooth and Location services are turned on so the app can scan your local surroundings.\n\n" +
+                           "Scan & Discover: Keep the app open or running in the background; discovered peers will automatically appear on your main screen list.\n\n" +
+                           "Connect & Chat: Tap on any active device card to open the full-screen chat window, say hello, and start flirting!",
+                    fontSize = 14.sp
+                )
+            }
+        },
+        shape = RoundedCornerShape(24.dp)
+    )
 }
 
 @Composable
@@ -543,7 +844,7 @@ fun ChatFullScreenWindow(
     messages: List<ChatMessage>,
     onDismiss: () -> Unit,
     onSendMessage: (String) -> Unit,
-    onSendWhoAmI: () -> Unit,
+    onSendProfile: () -> Unit,
     onSendPhotoUri: (Uri) -> Unit
 ) {
     var textInput by remember { mutableStateOf("") }
@@ -792,7 +1093,7 @@ fun ChatFullScreenWindow(
                     }
 
                     IconButton(
-                        onClick = onSendWhoAmI,
+                        onClick = onSendProfile,
                         modifier = Modifier
                             .size(40.dp)
                             .background(ChatFansBlue.copy(alpha = 0.12f), CircleShape)
@@ -942,6 +1243,9 @@ class ChatService : Service() {
         private val _activeChatPeer = MutableStateFlow<PeerDevice?>(null)
         val activeChatPeer: StateFlow<PeerDevice?> = _activeChatPeer
 
+        private val _userProfile = MutableStateFlow<FanProfile?>(null)
+        val userProfile: StateFlow<FanProfile?> = _userProfile
+
         private val payloadMsgMap = mutableMapOf<Long, Pair<String, String>>()
         private val incomingPhotoMeta = mutableMapOf<Long, Pair<String, String>>()
 
@@ -965,6 +1269,10 @@ class ChatService : Service() {
             }
 
             return false
+        }
+
+        fun setUserProfile(profile: FanProfile) {
+            _userProfile.value = profile
         }
 
         fun setActiveChatPeer(peer: PeerDevice?) {
@@ -996,25 +1304,14 @@ class ChatService : Service() {
             ChatStorageHelper.saveHistory(context, currentHistory)
         }
 
-        fun sendWhoAmI(context: Context, endpointId: String, peerName: String) {
-            val service = instance ?: return
-            val manufacturer = Build.MANUFACTURER
-            val model = Build.MODEL
-            val androidVersion = Build.VERSION.RELEASE
-            val sdkVersion = Build.VERSION.SDK_INT
-            val hardware = Build.HARDWARE
-            val board = Build.BOARD
-            val locale = Locale.getDefault().toString()
-            val processors = Runtime.getRuntime().availableProcessors()
-
+        fun sendUserProfile(context: Context, endpointId: String, peerName: String) {
+            val profile = _userProfile.value ?: return
             val detailedInfo = """
-                👤 [Fan Profile Info]
-                • Model: $manufacturer $model
-                • OS: Android $androidVersion (SDK $sdkVersion)
-                • Board/Hardware: $hardware / $board
-                • Locale: $locale
-                • CPU Cores: $processors
-                • Session ID: ${service.getDetailedDeviceName()}
+                👤 [Fan Profile]
+                • Name: ${profile.firstName} ${profile.lastName}
+                • Stage Name: ${profile.stageName}
+                • Email: ${profile.email}
+                • Phone: ${profile.phone}
             """.trimIndent()
 
             sendMessage(context, endpointId, peerName, detailedInfo)
@@ -1023,6 +1320,13 @@ class ChatService : Service() {
         fun sendPhotoUri(context: Context, endpointId: String, peerName: String, uri: Uri) {
             val file = ImageUtils.copyUriToCacheFile(context, uri) ?: return
             instance?.sendPhotoFile(context, endpointId, peerName, file)
+        }
+
+        fun stopService(context: Context) {
+            val intent = Intent(context, ChatService::class.java).apply {
+                action = ACTION_STOP
+            }
+            context.startService(intent)
         }
     }
 
@@ -1099,6 +1403,9 @@ class ChatService : Service() {
 
         val savedHistory = ChatStorageHelper.loadHistory(this)
         _chatHistoryMap.value = savedHistory
+
+        val savedProfile = ChatStorageHelper.loadProfile(this)
+        _userProfile.value = savedProfile
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
